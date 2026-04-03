@@ -6,7 +6,7 @@ pub mod protocol;
 pub mod server;
 
 use anyhow::Result;
-use tracing::{info, Level};
+use tracing::{Level, info};
 use tracing_subscriber::fmt::format::FmtSpan;
 
 #[tokio::main]

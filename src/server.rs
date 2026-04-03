@@ -36,6 +36,12 @@ impl McpServer {
         s
     }
 
+    /// Enable resources capability with listChanged flag.
+    pub fn enable_resources(mut self, list_changed: bool) -> Self {
+        self.capabilities.resources = Some(ResourcesCapability { list_changed });
+        self
+    }
+
     /// Run the server loop on stdio transport.
     pub async fn run(&mut self) -> Result<()> {
         let stdin = tokio::io::stdin();
@@ -57,7 +63,9 @@ impl McpServer {
                     // Parse and respond to the request
                     match self.handle_request(&line, initialized).await {
                         Ok(response) => {
-                            let _ = tokio::io::stdout().write_all(format!("{}\n", response).as_bytes()).await;
+                            let _ = tokio::io::stdout()
+                                .write_all(format!("{}\n", response).as_bytes())
+                                .await;
                             let _ = tokio::io::stdout().flush().await;
 
                             // After successful initialize, mark as initialized
@@ -72,7 +80,12 @@ impl McpServer {
                                 "error": JsonRpcError::internal_error(&e.to_string()),
                                 "id": null,
                             });
-                            let _ = tokio::io::stdout().write_all(format!("{}\n", serde_json::to_string(&err_resp).unwrap()).as_bytes()).await;
+                            let _ = tokio::io::stdout()
+                                .write_all(
+                                    format!("{}\n", serde_json::to_string(&err_resp).unwrap())
+                                        .as_bytes(),
+                                )
+                                .await;
                         }
                     }
 
@@ -109,7 +122,9 @@ impl McpServer {
             }
         );
 
-        let result = self.route_request(&request.method, &request.params, initialized).await;
+        let result = self
+            .route_request(&request.method, &request.params, initialized)
+            .await;
 
         Ok(match result {
             Ok(resp) => json!({
@@ -125,14 +140,20 @@ impl McpServer {
                     "id": request.id_value,
                 })
             }
-        }.to_string())
+        }
+        .to_string())
     }
 
     /// Route requests to appropriate handlers.
-    async fn route_request(&self, method: &str, params: &serde_json::Value, initialized: bool) -> Result<serde_json::Value> {
+    async fn route_request(
+        &self,
+        method: &str,
+        params: &serde_json::Value,
+        initialized: bool,
+    ) -> Result<serde_json::Value> {
         match method {
             "initialize" => self.handle_initialize(params).await,
-            "resources/list" => Ok(json!({ "resources": [] })),
+            "resources/list" => self.handle_resources_list().await,
             _ if !initialized => Err(anyhow::anyhow!("Server not initialized")),
             "initialized" => Ok(json!({})),
             "ping" => Ok(json!({})),
@@ -173,6 +194,11 @@ impl McpServer {
     /// Handle tools/list request.
     async fn handle_tools_list(&self) -> Result<serde_json::Value> {
         Ok(json!({ "tools": [] }))
+    }
+
+    /// Handle resources/list request.
+    async fn handle_resources_list(&self) -> Result<serde_json::Value> {
+        Ok(json!({ "resources": [] }))
     }
 }
 

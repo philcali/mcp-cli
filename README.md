@@ -12,6 +12,7 @@ A minimal Model Context Protocol (MCP) server implementation for CLI environment
 - **stdio transport** - Communicates via standard input/output streams
 - **Short-lived process model** - Each invocation is independent
 - **Tools capability** - Supports MCP tool discovery (currently returns empty list)
+- **Resources capability** - Supports MCP resource discovery (currently returns empty list)
 
 ## Installation
 
@@ -46,6 +47,8 @@ echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":
 | `ping` | Ping the server | No |
 | `tools/list` | List available tools | No |
 | `tools/call` | Call a tool | No (not implemented) |
+| `resources/list` | List available resources | No |
+| `resources/read` | Read a resource | No (not implemented) |
 
 ### Response format
 
@@ -99,7 +102,7 @@ This server implements:
 
 Not implemented:
 - `tools/call` - Returns error when called
-- `resources/list` and `resources/read` - Return empty/not implemented
+- `resources/read` - Returns error when called (use with resources/list to discover available resources)
 
 ## Architecture
 
