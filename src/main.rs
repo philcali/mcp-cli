@@ -19,8 +19,17 @@ async fn main() -> Result<()> {
         .without_time()
         .init();
 
-    let mut srv = server::McpServer::new("mcp-cli", "0.1.0").enable_tools();
+    // Parse command line arguments for tools directory
+    let args: Vec<String> = std::env::args().collect();
+    let mut builder = server::ServerBuilder::new("mcp-cli", "0.1.0").with_tools();
 
+    if args.len() > 1 {
+        let tools_dir = std::path::PathBuf::from(&args[1]);
+        info!("Using tools directory: {:?}", tools_dir);
+        builder = builder.with_tools_dir(tools_dir);
+    }
+
+    let mut srv = builder.build();
     info!("MCP server starting...");
     srv.run().await?;
 

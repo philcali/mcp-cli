@@ -11,7 +11,7 @@ A minimal Model Context Protocol (MCP) server implementation for CLI environment
 - **JSON-RPC 2.0 compliant** - Follows the official specification
 - **stdio transport** - Communicates via standard input/output streams
 - **Short-lived process model** - Each invocation is independent
-- **Tools capability** - Supports MCP tool discovery (currently returns empty list)
+- **Tools capability** - Supports MCP tool discovery with dynamic script loading
 - **Resources capability** - Supports MCP resource discovery (currently returns empty list)
 
 ## Installation
@@ -46,9 +46,45 @@ echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":
 | `initialized` | Notification that client is initialized | No |
 | `ping` | Ping the server | No |
 | `tools/list` | List available tools | No |
-| `tools/call` | Call a tool | No (not implemented) |
+| `tools/call` | Call a tool script | No |
 | `resources/list` | List available resources | No |
 | `resources/read` | Read a resource | No (not implemented) |
+
+### Tool scripts
+
+The server can discover and execute tool scripts from a configurable directory. Pass the tools directory path as the first argument:
+
+```bash
+./target/release/mcp-cli /path/to/tools
+```
+
+**Tool requirements:**
+- Executable files (shell scripts, binaries, etc.)
+- Filename without extension becomes the tool name
+- Scripts receive JSON input via stdin: `{"name": "tool-name", "arguments": {...}}`
+- Output to stdout is returned as the tool result
+- Exit code 0 = success, non-zero = error reported to client
+
+**Example tool script (`aws-s3-list.sh`):**
+```bash
+#!/bin/bash
+# AWS S3 bucket list wrapper
+input=$(cat)
+bucket=$(echo "$input" | jq -r '.arguments.bucket // empty')
+
+if [ -n "$bucket" ]; then
+    aws s3 ls "s3://$bucket/"
+else
+    aws s3 ls
+fi
+```
+
+**Calling the tool:**
+```json
+{"name": "aws-s3-list", "arguments": {"bucket": "my-bucket"}}
+```
+
+Tools are cached after first discovery for performance.
 
 ### Response format
 
@@ -101,7 +137,6 @@ This server implements:
 - Server capabilities (tools only)
 
 Not implemented:
-- `tools/call` - Returns error when called
 - `resources/read` - Returns error when called (use with resources/list to discover available resources)
 
 ## Architecture

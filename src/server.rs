@@ -3,14 +3,29 @@
 use crate::protocol::*;
 use anyhow::{Context, Result};
 use serde_json::json;
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Mutex;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 /// Server state and configuration.
 pub struct McpServer {
     name: String,
     version: String,
     capabilities: ServerCapabilities,
+    /// Path to tools directory (optional)
+    tools_dir: Option<PathBuf>,
+    /// Cached tool list from discovered scripts
+    cached_tools: Mutex<HashMap<String, ToolDefinition>>,
+}
+
+/// Definition of a discoverable tool.
+#[derive(Debug, Clone)]
+struct ToolDefinition {
+    name: String,
+    description: String,
+    script_path: PathBuf,
 }
 
 impl Default for McpServer {
@@ -26,6 +41,8 @@ impl McpServer {
             name: name.to_string(),
             version: version.to_string(),
             capabilities: ServerCapabilities::new(),
+            tools_dir: None,
+            cached_tools: Mutex::new(HashMap::new()),
         }
     }
 
@@ -34,6 +51,72 @@ impl McpServer {
         let mut s = self;
         s.capabilities.tools = Some(true);
         s
+    }
+
+    /// Set the tools directory path for dynamic tool discovery.
+    pub fn enable_tools_dir(mut self, path: PathBuf) -> Self {
+        self.tools_dir = Some(path);
+        self
+    }
+
+    /// Load tools from the tools directory.
+    fn load_tools(&self) -> Result<HashMap<String, ToolDefinition>> {
+        let dir = match &self.tools_dir {
+            Some(p) => p,
+            None => return Ok(HashMap::new()),
+        };
+
+        if !dir.exists() {
+            warn!("Tools directory does not exist: {:?}", dir);
+            return Ok(HashMap::new());
+        }
+
+        let mut tools = HashMap::new();
+
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+
+            // Skip directories and non-executable files
+            if !path.is_file() {
+                continue;
+            }
+
+            let metadata = match std::fs::metadata(&path) {
+                Ok(m) => m,
+                Err(e) => {
+                    warn!("Failed to read metadata for {:?}: {}", path, e);
+                    continue;
+                }
+            };
+
+            // Skip files without execute permission (basic check on Unix)
+            #[cfg(unix)]
+            {
+                use std::os::unix::prelude::*;
+                let mode = metadata.permissions().mode();
+                if mode & 0o111 == 0 {
+                    continue;
+                }
+            }
+
+            // Use filename without extension as tool name
+            let name = match path.file_stem() {
+                Some(stem) => stem.to_string_lossy().to_string(),
+                None => continue,
+            };
+
+            tools.insert(
+                name.clone(),
+                ToolDefinition {
+                    name: name.clone(),
+                    description: format!("Tool script: {}", path.display()),
+                    script_path: path,
+                },
+            );
+        }
+
+        Ok(tools)
     }
 
     /// Enable resources capability with listChanged flag.
@@ -158,8 +241,8 @@ impl McpServer {
             "initialized" => Ok(json!({})),
             "ping" => Ok(json!({})),
             "tools/list" => self.handle_tools_list().await,
-            "tools/call" => Err(anyhow::anyhow!("Tools not implemented")),
-            "resources/read" => Err(anyhow::anyhow!("Resources not implemented")),
+            "tools/call" => self.handle_tools_call(params).await,
+            "resources/read" => self.handle_resources_read(params).await,
             _ => Err(anyhow::anyhow!("Unknown method: {}", method)),
         }
     }
@@ -193,28 +276,199 @@ impl McpServer {
 
     /// Handle tools/list request.
     async fn handle_tools_list(&self) -> Result<serde_json::Value> {
-        Ok(json!({ "tools": [] }))
+        let mut cached = self.cached_tools.lock().unwrap();
+
+        // Load tools from directory if not already cached and directory is configured
+        if cached.is_empty() && self.tools_dir.is_some() {
+            *cached = self.load_tools()?;
+        }
+
+        let tool_list: Vec<_> = cached
+            .values()
+            .map(|t| {
+                json!({
+                    "name": t.name,
+                    "description": t.description,
+                })
+            })
+            .collect();
+
+        Ok(json!({ "tools": tool_list }))
     }
 
     /// Handle resources/list request.
     async fn handle_resources_list(&self) -> Result<serde_json::Value> {
         Ok(json!({ "resources": [] }))
     }
+
+    /// Handle tools/call request.
+    async fn handle_tools_call(&self, params: &serde_json::Value) -> Result<serde_json::Value> {
+        let call_params: CallToolParams = serde_json::from_value(params.clone())
+            .context("Failed to parse tool call parameters")?;
+
+        // Look up the tool in cache or try to load it
+        let script_path = {
+            let cached = self.cached_tools.lock().unwrap();
+            if let Some(tool) = cached.get(&call_params.name) {
+                tool.script_path.clone()
+            } else {
+                drop(cached);
+                // Reload tools and look again
+                let mut cached = self.cached_tools.lock().unwrap();
+                *cached = self.load_tools()?;
+                match cached.get(&call_params.name) {
+                    Some(tool) => tool.script_path.clone(),
+                    None => return Err(anyhow::anyhow!("Tool '{}' not found", call_params.name)),
+                }
+            }
+        };
+
+        // Prepare the input JSON for the script
+        let input = json!({
+            "name": call_params.name,
+            "arguments": call_params.arguments,
+        });
+
+        debug!(
+            "Executing tool from {:?} with input: {}",
+            script_path, input
+        );
+
+        // Spawn the script process
+        let mut child = tokio::process::Command::new(&script_path)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .context("Failed to spawn tool script")?;
+
+        // Write input to stdin and capture output/error
+        let result = {
+            let mut stdin = child.stdin.take().context("Failed to open stdin")?;
+            use tokio::io::AsyncWriteExt;
+            stdin.write_all(input.to_string().as_bytes()).await?;
+            drop(stdin); // Close stdin to signal EOF
+
+            // Read stdout and stderr concurrently
+            let mut stdout = child.stdout.take().context("Failed to open stdout")?;
+            let mut stderr = child.stderr.take().context("Failed to open stderr")?;
+
+            let (stdout_res, stderr_res) = tokio::join!(
+                async {
+                    use tokio::io::AsyncReadExt;
+                    let mut output = String::new();
+                    stdout.read_to_string(&mut output).await?;
+                    anyhow::Result::<String>::Ok(output)
+                },
+                async {
+                    use tokio::io::AsyncReadExt;
+                    let mut error_output = String::new();
+                    stderr.read_to_string(&mut error_output).await?;
+                    anyhow::Result::<String>::Ok(error_output)
+                }
+            );
+
+            match (stdout_res, stderr_res) {
+                (Ok(out), Ok(err)) => {
+                    if !err.is_empty() {
+                        debug!("Tool stderr: {}", err);
+                    }
+                    out
+                }
+                (Err(e), _) | (_, Err(e)) => {
+                    return Err(anyhow::anyhow!("Failed to read output: {}", e));
+                }
+            }
+        };
+
+        // Wait for process to complete
+        let status = child.wait().await.context("Failed to wait on tool")?;
+
+        debug!("Tool '{}' exited with status: {}", call_params.name, status);
+
+        if !status.success() {
+            return Err(anyhow::anyhow!(
+                "Tool '{}' failed with exit code: {:?}",
+                call_params.name,
+                status.code()
+            ));
+        }
+
+        Ok(json!({
+            "content": [
+                {
+                    "type": "text",
+                    "text": result.trim()
+                }
+            ]
+        }))
+    }
+
+    /// Handle resources/read request.
+    async fn handle_resources_read(&self, params: &serde_json::Value) -> Result<serde_json::Value> {
+        // Extract resource URI from parameters
+        let uri_value = params
+            .get("uri")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Missing 'uri' parameter"))?;
+
+        Err(anyhow::anyhow!("Resource '{}' is not available", uri_value))
+    }
 }
 
 /// Server with tools capability enabled (for builder pattern).
 pub struct McpServerWithTools {
-    name: String,
-    version: String,
-    capabilities: ServerCapabilities,
+    inner: McpServer,
 }
 
 impl McpServerWithTools {
     pub fn run(self) -> McpServer {
-        McpServer {
-            name: self.name,
-            version: self.version,
-            capabilities: self.capabilities,
+        self.inner
+    }
+}
+
+/// Builder for configuring the MCP server.
+pub struct ServerBuilder {
+    name: String,
+    version: String,
+    enable_tools: bool,
+    tools_dir: Option<std::path::PathBuf>,
+}
+
+impl ServerBuilder {
+    pub fn new(name: &str, version: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            version: version.to_string(),
+            enable_tools: false,
+            tools_dir: None,
         }
+    }
+
+    pub fn with_tools(mut self) -> Self {
+        self.enable_tools = true;
+        self
+    }
+
+    pub fn with_tools_dir<P: Into<std::path::PathBuf>>(mut self, path: P) -> Self {
+        self.tools_dir = Some(path.into());
+        self
+    }
+
+    pub fn build(self) -> McpServer {
+        let mut server = McpServer::new(&self.name, &self.version);
+        if self.enable_tools {
+            server = server.enable_tools();
+        }
+        if let Some(ref path) = self.tools_dir {
+            server = server.enable_tools_dir(path.clone());
+        }
+        server
+    }
+}
+
+impl Default for ServerBuilder {
+    fn default() -> Self {
+        Self::new("mcp-cli", "0.1.0")
     }
 }
