@@ -12,7 +12,7 @@ A minimal Model Context Protocol (MCP) server implementation for CLI environment
 - **stdio transport** - Communicates via standard input/output streams
 - **Short-lived process model** - Each invocation is independent
 - **Tools capability** - Supports MCP tool discovery with dynamic script loading
-- **Resources capability** - Supports MCP resource discovery (currently returns empty list)
+- **Resources capability** - Supports MCP resource discovery from a configured directory
 
 ## Installation
 
@@ -48,11 +48,11 @@ echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":
 | `tools/list` | List available tools | No |
 | `tools/call` | Call a tool script | No |
 | `resources/list` | List available resources | No |
-| `resources/read` | Read a resource | No (not implemented) |
+| `resources/read` | Read a resource file | No |
 
 ### Tool scripts
 
-The server can discover and execute tool scripts from a configurable directory. Pass the tools directory path as the first argument:
+The server can discover and execute tool scripts from a configurable directory:
 
 ```bash
 ./target/release/mcp-cli /path/to/tools
@@ -85,6 +85,54 @@ fi
 ```
 
 Tools are cached after first discovery for performance.
+
+### Resource files
+
+The server can discover and serve resource files from a configurable directory:
+
+```bash
+./target/release/mcp-cli /path/to/tools /path/to/resources
+```
+
+Or configure via the builder pattern in code:
+```rust
+McpServer::default()
+    .enable_tools()
+    .enable_tools_dir(PathBuf::from("/path/to/tools"))
+    .enable_resources(true)  // Enable resources capability with listChanged=true
+    .enable_resources_dir(PathBuf::from("/path/to/resources"))
+```
+
+**Resource requirements:**
+- Regular files in the configured directory
+- Filename without extension becomes the resource name
+- URI is constructed as `file://<absolute-path>`
+- MIME type is auto-detected from file extension
+
+**Supported MIME types:**
+| Extension | MIME Type |
+|-----------|-----------|
+| `.txt`, `.text` | `text/plain` |
+| `.md` | `text/markdown` |
+| `.json` | `application/json` |
+| `.xml` | `application/xml` |
+| `.yaml`, `.yml` | `application/yaml` |
+| `.toml` | `application/toml` |
+| `.rs` | `text/x-rust` |
+| `.sh` | `application/x-sh` |
+| `.py` | `text/x-python` |
+
+**Example resource file (`config.json`):**
+```json
+{"region": "us-east-1", "environment": "production"}
+```
+
+**Reading the resource:**
+```bash
+echo '{"jsonrpc":"2.0","id":2,"method":"resources/read","params":{"uri":"file:///path/to/resources/config.json"}}' | ./target/release/mcp-cli
+```
+
+Resources are cached after first discovery for performance.
 
 ### Response format
 
@@ -134,10 +182,7 @@ curl -s --unix-socket /tmp/mcp.sock \
 This server implements:
 - JSON-RPC 2.0 specification
 - MCP protocol version `2024-11-05`
-- Server capabilities (tools only)
-
-Not implemented:
-- `resources/read` - Returns error when called (use with resources/list to discover available resources)
+- Server capabilities: tools and resources
 
 ## Architecture
 

@@ -2,12 +2,26 @@
 //!
 //! This is a minimal MCP server that communicates via stdio using JSON-RPC 2.0.
 
+use anyhow::Result;
+use clap::Parser;
+use tracing::{Level, info};
+use tracing_subscriber::fmt::format::FmtSpan;
+
 pub mod protocol;
 pub mod server;
 
-use anyhow::Result;
-use tracing::{Level, info};
-use tracing_subscriber::fmt::format::FmtSpan;
+/// Model Context Protocol CLI server
+#[derive(Parser, Debug)]
+#[command(name = "mcp-cli", about = "MCP server with stdio transport")]
+struct Cli {
+    /// Directory path for tools (executable files)
+    #[arg(long, short)]
+    tools_dir: Option<std::path::PathBuf>,
+
+    /// Directory path for resources
+    #[arg(long, short)]
+    resources_dir: Option<std::path::PathBuf>,
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -19,14 +33,19 @@ async fn main() -> Result<()> {
         .without_time()
         .init();
 
-    // Parse command line arguments for tools directory
-    let args: Vec<String> = std::env::args().collect();
-    let mut builder = server::ServerBuilder::new("mcp-cli", "0.1.0").with_tools();
+    let cli = Cli::parse();
+    let mut builder = server::ServerBuilder::new("mcp-cli", "0.1.0")
+        .with_tools()
+        .with_resources(false);
 
-    if args.len() > 1 {
-        let tools_dir = std::path::PathBuf::from(&args[1]);
+    if let Some(tools_dir) = cli.tools_dir {
         info!("Using tools directory: {:?}", tools_dir);
         builder = builder.with_tools_dir(tools_dir);
+    }
+
+    if let Some(resources_dir) = cli.resources_dir {
+        info!("Using resources directory: {:?}", resources_dir);
+        builder = builder.with_resources_dir(resources_dir);
     }
 
     let mut srv = builder.build();

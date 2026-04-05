@@ -18,6 +18,10 @@ pub struct McpServer {
     tools_dir: Option<PathBuf>,
     /// Cached tool list from discovered scripts
     cached_tools: Mutex<HashMap<String, ToolDefinition>>,
+    /// Path to resources directory (optional)
+    resources_dir: Option<PathBuf>,
+    /// Cached resource list
+    cached_resources: Mutex<Vec<ResourceEntry>>,
 }
 
 /// Definition of a discoverable tool.
@@ -26,6 +30,17 @@ struct ToolDefinition {
     name: String,
     description: String,
     script_path: PathBuf,
+}
+
+/// Entry for a discovered resource.
+#[derive(Debug, Clone)]
+struct ResourceEntry {
+    uri: String,
+    resource_type: String,
+    name: String,
+    description: Option<String>,
+    mime_type: Option<String>,
+    file_path: PathBuf,
 }
 
 impl Default for McpServer {
@@ -43,6 +58,8 @@ impl McpServer {
             capabilities: ServerCapabilities::new(),
             tools_dir: None,
             cached_tools: Mutex::new(HashMap::new()),
+            resources_dir: None,
+            cached_resources: Mutex::new(Vec::new()),
         }
     }
 
@@ -117,6 +134,88 @@ impl McpServer {
         }
 
         Ok(tools)
+    }
+
+    /// Load resources from the resources directory.
+    fn load_resources(&self) -> Result<Vec<ResourceEntry>> {
+        let dir = match &self.resources_dir {
+            Some(p) => p,
+            None => {
+                info!("No resources directory configured");
+                return Ok(Vec::new());
+            }
+        };
+
+        if !dir.exists() {
+            warn!("Resources directory does not exist: {:?}", dir);
+            return Ok(Vec::new());
+        }
+
+        debug!("Loading resources from: {:?}", dir);
+
+        let mut resources = Vec::new();
+
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+
+            // Skip directories
+            if !path.is_file() {
+                continue;
+            }
+
+            // Read filename without extension as resource name
+            let (name, mime_type) = match (path.file_stem(), path.extension()) {
+                (Some(stem), Some(ext)) => (
+                    stem.to_string_lossy().to_string(),
+                    Some(Self::mime_from_extension(ext.to_str().unwrap_or(""))),
+                ),
+                (Some(stem), None) => (stem.to_string_lossy().to_string(), None),
+                _ => continue,
+            };
+
+            let uri = format!("file://{}", path.display());
+
+            debug!("Found resource: {} -> {}", name, uri);
+
+            resources.push(ResourceEntry {
+                uri: uri.clone(),
+                resource_type: "text".to_string(),
+                name: name.clone(),
+                description: Some(format!("Resource file: {}", path.display())),
+                mime_type,
+                file_path: path,
+            });
+        }
+
+        debug!("Loaded {} resources", resources.len());
+        Ok(resources)
+    }
+
+    /// Detect MIME type from file extension.
+    fn mime_from_extension(ext: &str) -> String {
+        match ext {
+            "txt" | "text" => "text/plain".to_string(),
+            "md" => "text/markdown".to_string(),
+            "json" => "application/json".to_string(),
+            "xml" => "application/xml".to_string(),
+            "yaml" | "yml" => "application/yaml".to_string(),
+            "toml" => "application/toml".to_string(),
+            "rs" => "text/x-rust".to_string(),
+            "sh" => "application/x-sh".to_string(),
+            "py" => "text/x-python".to_string(),
+            "js" => "application/javascript".to_string(),
+            "html" | "htm" => "text/html".to_string(),
+            "css" => "text/css".to_string(),
+            "csv" => "text/csv".to_string(),
+            _ => "application/octet-stream".to_string(),
+        }
+    }
+
+    /// Set the resources directory path for dynamic resource discovery.
+    pub fn enable_resources_dir(mut self, path: PathBuf) -> Self {
+        self.resources_dir = Some(path);
+        self
     }
 
     /// Enable resources capability with listChanged flag.
@@ -298,7 +397,27 @@ impl McpServer {
 
     /// Handle resources/list request.
     async fn handle_resources_list(&self) -> Result<serde_json::Value> {
-        Ok(json!({ "resources": [] }))
+        let mut cached = self.cached_resources.lock().unwrap();
+
+        // Load resources from directory if not already cached and directory is configured
+        if cached.is_empty() && self.resources_dir.is_some() {
+            *cached = self.load_resources()?;
+        }
+
+        let resource_list: Vec<_> = cached
+            .iter()
+            .map(|r| {
+                json!({
+                    "uri": r.uri,
+                    "type": r.resource_type,
+                    "name": r.name,
+                    "description": r.description,
+                    "mimeType": r.mime_type,
+                })
+            })
+            .collect();
+
+        Ok(json!({ "resources": resource_list }))
     }
 
     /// Handle tools/call request.
@@ -412,7 +531,36 @@ impl McpServer {
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing 'uri' parameter"))?;
 
-        Err(anyhow::anyhow!("Resource '{}' is not available", uri_value))
+        info!("Reading resource: {}", uri_value);
+
+        // First check cache, reload if empty
+        let mut cached = self.cached_resources.lock().unwrap();
+
+        if cached.is_empty() {
+            *cached = self.load_resources()?;
+            info!("Reloaded {} resources", cached.len());
+        }
+
+        let entry = cached.iter().find(|r| r.uri == uri_value).cloned();
+
+        if let Some(entry) = entry {
+            info!("Found resource: {:?}", entry.file_path);
+
+            // Read the file contents
+            let content = std::fs::read_to_string(&entry.file_path)?;
+
+            Ok(json!({
+                "contents": [
+                    {
+                        "uri": entry.uri,
+                        "text": content,
+                        "mimeType": entry.mime_type,
+                    }
+                ]
+            }))
+        } else {
+            Err(anyhow::anyhow!("Resource '{}' is not available", uri_value))
+        }
     }
 }
 
@@ -433,6 +581,9 @@ pub struct ServerBuilder {
     version: String,
     enable_tools: bool,
     tools_dir: Option<std::path::PathBuf>,
+    enable_resources: bool,
+    resources_list_changed: bool,
+    resources_dir: Option<std::path::PathBuf>,
 }
 
 impl ServerBuilder {
@@ -442,6 +593,9 @@ impl ServerBuilder {
             version: version.to_string(),
             enable_tools: false,
             tools_dir: None,
+            enable_resources: false,
+            resources_list_changed: false,
+            resources_dir: None,
         }
     }
 
@@ -455,6 +609,17 @@ impl ServerBuilder {
         self
     }
 
+    pub fn with_resources(mut self, list_changed: bool) -> Self {
+        self.enable_resources = true;
+        self.resources_list_changed = list_changed;
+        self
+    }
+
+    pub fn with_resources_dir<P: Into<std::path::PathBuf>>(mut self, path: P) -> Self {
+        self.resources_dir = Some(path.into());
+        self
+    }
+
     pub fn build(self) -> McpServer {
         let mut server = McpServer::new(&self.name, &self.version);
         if self.enable_tools {
@@ -462,6 +627,12 @@ impl ServerBuilder {
         }
         if let Some(ref path) = self.tools_dir {
             server = server.enable_tools_dir(path.clone());
+        }
+        if self.enable_resources {
+            server = server.enable_resources(self.resources_list_changed);
+        }
+        if let Some(ref path) = self.resources_dir {
+            server = server.enable_resources_dir(path.clone());
         }
         server
     }

@@ -1,17 +1,42 @@
 //! Integration tests for mcp-cli server.
 
+use std::fs;
 use std::io::{BufRead, Write};
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use tempfile::TempDir;
 
-/// Spawn the MCP server and run a single request-response cycle.
-fn run_request(method: &str, params: Option<&serde_json::Value>, id: i64) -> serde_json::Value {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_mcp-cli"))
+/// Spawn the MCP server with optional resources directory.
+fn run_request_with_resources(
+    method: &str,
+    params: Option<&serde_json::Value>,
+    id: i64,
+    resources_dir: Option<PathBuf>,
+) -> serde_json::Value {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_mcp-cli"));
+
+    // Add resources directory argument if provided (use --resources-dir flag for tests)
+    if let Some(ref dir) = resources_dir {
+        cmd.arg("--resources-dir").arg(dir.to_str().unwrap());
+    }
+
+    let child = cmd
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .spawn()
         .expect("Failed to spawn mcp-cli");
 
+    send_request_and_read_response(child, method, params, id)
+}
+
+/// Send a single request and read response (helper for run_request_with_resources).
+fn send_request_and_read_response(
+    mut child: std::process::Child,
+    method: &str,
+    params: Option<&serde_json::Value>,
+    id: i64,
+) -> serde_json::Value {
     let req = serde_json::json!({
         "jsonrpc": "2.0",
         "id": id,
@@ -20,7 +45,7 @@ fn run_request(method: &str, params: Option<&serde_json::Value>, id: i64) -> ser
 
     let request = if let Some(p) = params {
         let mut r = req.as_object().unwrap().clone();
-        r.insert("params".to_string(), p.clone());
+        r.insert("params".to_string(), p.to_owned());
         serde_json::Value::Object(r)
     } else {
         req
@@ -32,7 +57,7 @@ fn run_request(method: &str, params: Option<&serde_json::Value>, id: i64) -> ser
         drop(stdin);
     }
 
-    // Read response from stdout (skip log lines starting with non-JSON chars)
+    // Read response from stdout
     let mut result = serde_json::Value::Null;
     if let Some(stdout) = child.stdout.take() {
         for line in std::io::BufReader::new(stdout)
@@ -46,10 +71,95 @@ fn run_request(method: &str, params: Option<&serde_json::Value>, id: i64) -> ser
         }
     }
 
-    // Wait for process to complete and collect stderr logs
     let _output = child.wait_with_output();
-
     result
+}
+
+/// Spawn server and send multiple requests (for multi-step test flows).
+fn run_request_sequence(
+    resources_dir: Option<PathBuf>,
+    requests: Vec<(&str, Option<&serde_json::Value>)>,
+) -> Vec<serde_json::Value> {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_mcp-cli"));
+
+    // Add resources directory argument if provided (use --resources-dir flag for tests)
+    if let Some(ref dir) = resources_dir {
+        cmd.arg("--resources-dir").arg(dir.to_str().unwrap());
+    }
+
+    let mut child = cmd
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("Failed to spawn mcp-cli");
+
+    let mut results = Vec::new();
+
+    if let Some(mut stdin) = child.stdin.take() {
+        for (i, (method, params)) in requests.iter().enumerate() {
+            let id = i as i64 + 1;
+            let req = serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": method,
+            });
+
+            let request = if let Some(p) = params {
+                let mut r = req.as_object().unwrap().clone();
+                r.insert("params".to_string(), (*p).clone());
+                serde_json::Value::Object(r)
+            } else {
+                req
+            };
+
+            writeln!(stdin, "{}", request).unwrap();
+        }
+    }
+
+    // Read all responses
+    if let Some(stdout) = child.stdout.take() {
+        for line in std::io::BufReader::new(stdout)
+            .lines()
+            .map_while(|l| l.ok())
+        {
+            if line.trim_start().starts_with('{') {
+                results.push(serde_json::from_str(&line).expect("Failed to parse response"));
+            }
+        }
+    }
+
+    let _output = child.wait_with_output();
+    results
+}
+
+/// Spawn the MCP server and run a single request-response cycle.
+fn run_request(method: &str, params: Option<&serde_json::Value>, id: i64) -> serde_json::Value {
+    run_request_with_resources(method, params, id, None)
+}
+
+/// Setup test resources directory with sample files.
+fn setup_test_resources() -> TempDir {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+
+    // Create a text file
+    fs::write(temp_dir.path().join("hello.txt"), "Hello, World!").unwrap();
+
+    // Create a JSON file
+    fs::write(
+        temp_dir.path().join("config.json"),
+        r#"{"key": "value", "number": 42}"#,
+    )
+    .unwrap();
+
+    // Create a markdown file
+    fs::write(
+        temp_dir.path().join("readme.md"),
+        "# Test Resource\nThis is a test.",
+    )
+    .unwrap();
+
+    temp_dir
 }
 
 #[test]
@@ -146,5 +256,175 @@ fn test_resources_endpoints() {
     assert!(
         response.get("result").is_some(),
         "Expected result for resources/list"
+    );
+}
+
+#[test]
+fn test_resources_list_with_directory() {
+    let temp_dir = setup_test_resources();
+
+    let params = serde_json::json!({
+        "protocolVersion": "2024-11-05",
+        "capabilities": {},
+        "clientInfo": {
+            "name": "test-client",
+            "version": "1.0"
+        }
+    });
+
+    let _response = run_request("initialize", Some(&params), 1);
+
+    // Now list resources from the temp directory
+    let response = run_request_with_resources(
+        "resources/list",
+        None,
+        2,
+        Some(temp_dir.path().to_path_buf()),
+    );
+
+    assert_eq!(response["jsonrpc"], "2.0");
+    assert!(
+        response.get("result").is_some(),
+        "Expected result for resources/list"
+    );
+
+    let result = response["result"].as_object().unwrap();
+    let resources = result["resources"].as_array().unwrap();
+
+    // Should have 3 resource files
+    assert_eq!(resources.len(), 3, "Should discover all 3 resource files");
+
+    // Check that we found the expected files
+    let uris: Vec<&str> = resources
+        .iter()
+        .map(|r| r["uri"].as_str().unwrap())
+        .collect();
+
+    assert!(
+        uris.iter().any(|u| u.contains("hello.txt")),
+        "Should include hello.txt"
+    );
+    assert!(
+        uris.iter().any(|u| u.contains("config.json")),
+        "Should include config.json"
+    );
+    assert!(
+        uris.iter().any(|u| u.contains("readme.md")),
+        "Should include readme.md"
+    );
+}
+
+#[test]
+fn test_resources_read_text_file() {
+    let temp_dir = setup_test_resources();
+
+    // Initialize and read in sequence on same server process
+    let params = serde_json::json!({
+        "protocolVersion": "2024-11-05",
+        "capabilities": {},
+        "clientInfo": {
+            "name": "test-client",
+            "version": "1.0"
+        }
+    });
+
+    let read_params = serde_json::json!({
+        "uri": format!("file://{}/hello.txt", temp_dir.path().display())
+    });
+
+    let results = run_request_sequence(
+        Some(temp_dir.path().to_path_buf()),
+        vec![
+            ("initialize", Some(&params)),
+            ("resources/read", Some(&read_params)),
+        ],
+    );
+
+    assert_eq!(results.len(), 2);
+    eprintln!("Response: {:?}", results[1]);
+    assert!(
+        results[1].get("result").is_some(),
+        "Expected result for resources/read, got error: {:?}",
+        results[1].get("error")
+    );
+
+    let result = results[1]["result"].as_object().unwrap();
+    let contents = result["contents"].as_array().unwrap();
+    assert_eq!(contents.len(), 1);
+
+    let content = &contents[0];
+    assert_eq!(content["text"], "Hello, World!");
+}
+
+#[test]
+fn test_resources_read_json_file() {
+    let temp_dir = setup_test_resources();
+
+    // Initialize and read in sequence on same server process
+    let params = serde_json::json!({
+        "protocolVersion": "2024-11-05",
+        "capabilities": {},
+        "clientInfo": {
+            "name": "test-client",
+            "version": "1.0"
+        }
+    });
+
+    let read_params = serde_json::json!({
+        "uri": format!("file://{}/config.json", temp_dir.path().display())
+    });
+
+    let results = run_request_sequence(
+        Some(temp_dir.path().to_path_buf()),
+        vec![
+            ("initialize", Some(&params)),
+            ("resources/read", Some(&read_params)),
+        ],
+    );
+
+    assert_eq!(results.len(), 2);
+    eprintln!("Response: {:?}", results[1]);
+    assert!(
+        results[1].get("result").is_some(),
+        "Expected result for resources/read, got error: {:?}",
+        results[1].get("error")
+    );
+
+    let result = results[1]["result"].as_object().unwrap();
+    let contents = result["contents"].as_array().unwrap();
+    assert_eq!(contents.len(), 1);
+
+    let content = &contents[0];
+    assert_eq!(content["mimeType"], "application/json");
+}
+
+#[test]
+fn test_resources_read_not_found() {
+    // Initialize and try to read in sequence on same server process
+    let params = serde_json::json!({
+        "protocolVersion": "2024-11-05",
+        "capabilities": {},
+        "clientInfo": {
+            "name": "test-client",
+            "version": "1.0"
+        }
+    });
+
+    let read_params = serde_json::json!({
+        "uri": "file:///nonexistent/resource.txt"
+    });
+
+    let results = run_request_sequence(
+        None,
+        vec![
+            ("initialize", Some(&params)),
+            ("resources/read", Some(&read_params)),
+        ],
+    );
+
+    assert_eq!(results.len(), 2);
+    assert!(
+        results[1].get("error").is_some(),
+        "Expected error for non-existent resource"
     );
 }
