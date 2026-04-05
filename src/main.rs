@@ -2,14 +2,26 @@
 //!
 //! This is a minimal MCP server that communicates via stdio using JSON-RPC 2.0.
 
+use anyhow::Result;
+use clap::Parser;
+use tracing::{Level, info};
+use tracing_subscriber::fmt::format::FmtSpan;
+
 pub mod protocol;
 pub mod server;
 
-use anyhow::Result;
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
-use tracing::{Level, info};
-use tracing_subscriber::fmt::format::FmtSpan;
+/// Model Context Protocol CLI server
+#[derive(Parser, Debug)]
+#[command(name = "mcp-cli", about = "MCP server with stdio transport")]
+struct Cli {
+    /// Directory path for tools (executable files)
+    #[arg(long, short)]
+    tools_dir: Option<std::path::PathBuf>,
+
+    /// Directory path for resources
+    #[arg(long, short)]
+    resources_dir: Option<std::path::PathBuf>,
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -21,69 +33,19 @@ async fn main() -> Result<()> {
         .without_time()
         .init();
 
-    // Parse command line arguments for tools and resources directories
-    let args: Vec<String> = std::env::args().collect();
+    let cli = Cli::parse();
     let mut builder = server::ServerBuilder::new("mcp-cli", "0.1.0")
         .with_tools()
         .with_resources(false);
 
-    // Support --tools-dir flag with explicit path following it
-    if args.len() > 1 && args[1] == "--tools-dir" && args.len() > 2 {
-        let tools_dir = std::path::PathBuf::from(&args[2]);
+    if let Some(tools_dir) = cli.tools_dir {
         info!("Using tools directory: {:?}", tools_dir);
         builder = builder.with_tools_dir(tools_dir);
     }
 
-    // Support --resources-dir flag with explicit path following it
-    if args.len() > 1 && args[1] == "--resources-dir" && args.len() > 2 {
-        let resources_dir = std::path::PathBuf::from(&args[2]);
+    if let Some(resources_dir) = cli.resources_dir {
         info!("Using resources directory: {:?}", resources_dir);
         builder = builder.with_resources_dir(resources_dir);
-    }
-
-    // If no flags, first positional arg is tools dir, second is resources dir
-    if args.len() > 1 && !args[1].starts_with("--") {
-        let arg1 = &args[1];
-        info!("First argument: {}", arg1);
-
-        // Check if it's executable (tools dir) or not (resources dir)
-        #[cfg(unix)]
-        let is_executable = std::path::Path::new(arg1).exists() && {
-            match std::fs::metadata(arg1) {
-                Ok(m) => m.permissions().mode() & 0o111 != 0,
-                Err(_) => false,
-            }
-        };
-        #[cfg(not(unix))]
-        let is_executable = true;
-
-        if is_executable {
-            let tools_dir = std::path::PathBuf::from(arg1);
-            info!("Using tools directory: {:?}", tools_dir);
-            builder = builder.with_tools_dir(tools_dir);
-
-            // Second arg is resources dir
-            if args.len() > 2 {
-                let resources_dir = std::path::PathBuf::from(&args[2]);
-                info!("Using resources directory: {:?}", resources_dir);
-                builder = builder.with_resources_dir(resources_dir);
-            }
-        } else {
-            // Not executable, treat as resources dir (tests)
-            let resources_dir = std::path::PathBuf::from(arg1);
-            info!("Using resources directory: {:?}", resources_dir);
-            builder = builder.with_resources_dir(resources_dir);
-
-            // Second arg is also resources dir
-            if args.len() > 2 {
-                let extra_resources = std::path::PathBuf::from(&args[2]);
-                info!(
-                    "Using additional resources directory: {:?}",
-                    extra_resources
-                );
-                builder = builder.with_resources_dir(extra_resources);
-            }
-        }
     }
 
     let mut srv = builder.build();
