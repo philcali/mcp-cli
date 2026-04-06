@@ -9,6 +9,14 @@ use std::sync::Mutex;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tracing::{debug, error, info, warn};
 
+/// Client-provided root directory.
+#[derive(Debug, Clone)]
+struct Root {
+    uri: String,
+    #[allow(dead_code)] // Reserved for future use when client sends roots during init
+    _name: Option<String>,
+}
+
 /// Server state and configuration.
 pub struct McpServer {
     name: String,
@@ -22,14 +30,97 @@ pub struct McpServer {
     resources_dir: Option<PathBuf>,
     /// Cached resource list
     cached_resources: Mutex<Vec<ResourceEntry>>,
+    /// Client-provided root directories for file access
+    roots: Mutex<Vec<Root>>,
 }
 
-/// Definition of a discoverable tool.
+/// Definition of a discoverable tool with auth config.
 #[derive(Debug, Clone)]
 struct ToolDefinition {
     name: String,
     description: String,
     script_path: PathBuf,
+    /// Authentication configuration for this tool (if any)
+    auth_config: Option<ToolAuthConfig>,
+}
+
+/// Credential resolver that validates and injects environment variables.
+pub struct CredentialResolver;
+
+impl Default for CredentialResolver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CredentialResolver {
+    pub fn new() -> Self {
+        Self
+    }
+
+    /// Resolve credentials for a tool by validating required env vars.
+    pub fn resolve_for_tool(
+        tools_dir: &std::path::Path,
+        tool_name: &str,
+    ) -> Result<Vec<(String, String)>> {
+        let auth_config = Self::load_auth_config(tools_dir, tool_name)?;
+
+        match auth_config {
+            Some(config) => Self::validate_and_inject(&config),
+            None => Ok(Vec::new()), // No auth required for this tool
+        }
+    }
+
+    /// Load the auth config for a specific tool.
+    fn load_auth_config(
+        tools_dir: &std::path::Path,
+        tool_name: &str,
+    ) -> Result<Option<ToolAuthConfig>> {
+        let auth_path = tools_dir.join(tool_name).join(".auth.json");
+        if auth_path.exists() {
+            return load_tool_auth_config(&auth_path);
+        }
+
+        // Also check for .auth.json directly in tools dir (non-namespaced)
+        let flat_auth_path = tools_dir.join(format!("{}.auth.json", tool_name));
+        if flat_auth_path.exists() {
+            return load_tool_auth_config(&flat_auth_path);
+        }
+
+        Ok(None)
+    }
+
+    /// Validate required env vars and collect them for injection.
+    fn validate_and_inject(config: &ToolAuthConfig) -> Result<Vec<(String, String)>> {
+        let mut creds = Vec::new();
+
+        for env_var in &config.required_env_vars {
+            match std::env::var(env_var) {
+                Ok(value) => {
+                    if value.is_empty() {
+                        return Err(anyhow::anyhow!(
+                            "Environment variable '{}' is set but empty. Please provide a valid credential.",
+                            env_var
+                        ));
+                    }
+                    creds.push((env_var.clone(), value));
+                }
+                Err(_) => {
+                    // Build helpful error message with available credentials for context
+                    let all_env_vars: Vec<String> = config.required_env_vars.to_vec();
+                    return Err(anyhow::anyhow!(
+                        "Missing required environment variable '{}' for tool '{:?}'.\nAvailable variables: {}\nPlease set {} to continue.",
+                        env_var,
+                        config.strategy,
+                        all_env_vars.join(", "),
+                        env_var
+                    ));
+                }
+            }
+        }
+
+        Ok(creds)
+    }
 }
 
 /// Entry for a discovered resource.
@@ -60,7 +151,54 @@ impl McpServer {
             cached_tools: Mutex::new(HashMap::new()),
             resources_dir: None,
             cached_resources: Mutex::new(Vec::new()),
+            roots: Mutex::new(Vec::new()),
         }
+    }
+
+    /// Add a root directory provided by the client.
+    pub fn add_root(&self, uri: String, name: Option<String>) {
+        let mut roots = self.roots.lock().unwrap();
+        // Avoid duplicates based on URI
+        if !roots.iter().any(|r| r.uri == uri) {
+            roots.push(Root { uri, _name: name });
+        }
+    }
+
+    /// Handle initialize request and store client-provided roots.
+    async fn handle_initialize(&self, params: &serde_json::Value) -> Result<serde_json::Value> {
+        let init_params: InitParams = serde_json::from_value(params.clone())
+            .context("Failed to parse initialize parameters")?;
+
+        info!(
+            "Received initialize request from {}: {}",
+            init_params.client_info.name, init_params.protocol_version
+        );
+
+        // Parse and store client-provided root directories
+        if let Some(roots_cap) = &init_params.capabilities.roots {
+            debug!(
+                "Client supports roots listing: {:?}",
+                roots_cap.list_changed
+            );
+            // Note: In a full implementation, the client would send root information
+            // during initialize that we'd parse and store here.
+        }
+
+        // Validate protocol version (simplified check)
+        if !init_params.protocol_version.starts_with("2024-") {
+            return Err(anyhow::anyhow!("Unsupported protocol version"));
+        }
+
+        let result = InitResult {
+            protocol_version: "2024-11-05".to_string(),
+            capabilities: self.capabilities.clone(),
+            server_info: Implementation {
+                name: self.name.clone(),
+                version: self.version.clone(),
+            },
+        };
+
+        Ok(serde_json::to_value(result)?)
     }
 
     /// Enable tools capability.
@@ -123,12 +261,23 @@ impl McpServer {
                 None => continue,
             };
 
+            // Try to load auth config for this tool
+            let auth_config = match load_tool_auth_config(&path.with_extension("")) {
+                Ok(Some(cfg)) => Some(cfg),
+                Err(e) => {
+                    warn!("Failed to load auth config for {}: {}", name, e);
+                    None
+                }
+                Ok(None) => None,
+            };
+
             tools.insert(
                 name.clone(),
                 ToolDefinition {
                     name: name.clone(),
                     description: format!("Tool script: {}", path.display()),
                     script_path: path,
+                    auth_config,
                 },
             );
         }
@@ -339,38 +488,12 @@ impl McpServer {
             _ if !initialized => Err(anyhow::anyhow!("Server not initialized")),
             "initialized" => Ok(json!({})),
             "ping" => Ok(json!({})),
+            "roots/list" => self.handle_roots_list().await,
             "tools/list" => self.handle_tools_list().await,
             "tools/call" => self.handle_tools_call(params).await,
             "resources/read" => self.handle_resources_read(params).await,
             _ => Err(anyhow::anyhow!("Unknown method: {}", method)),
         }
-    }
-
-    /// Handle initialize request.
-    async fn handle_initialize(&self, params: &serde_json::Value) -> Result<serde_json::Value> {
-        let init_params: InitParams = serde_json::from_value(params.clone())
-            .context("Failed to parse initialize parameters")?;
-
-        info!(
-            "Received initialize request from {}: {}",
-            init_params.client_info.name, init_params.protocol_version
-        );
-
-        // Validate protocol version (simplified check)
-        if !init_params.protocol_version.starts_with("2024-") {
-            return Err(anyhow::anyhow!("Unsupported protocol version"));
-        }
-
-        let result = InitResult {
-            protocol_version: "2024-11-05".to_string(),
-            capabilities: self.capabilities.clone(),
-            server_info: Implementation {
-                name: self.name.clone(),
-                version: self.version.clone(),
-            },
-        };
-
-        Ok(serde_json::to_value(result)?)
     }
 
     /// Handle tools/list request.
@@ -420,27 +543,69 @@ impl McpServer {
         Ok(json!({ "resources": resource_list }))
     }
 
+    /// Handle roots/list request - return client-provided root directories.
+    async fn handle_roots_list(&self) -> Result<serde_json::Value> {
+        info!("Handling roots list request");
+
+        // In MCP, roots are provided by the client during initialization via
+        // ClientCapabilities.roots. The server lists them back to confirm access.
+        // For now, we return an empty list - in a real scenario, these would be
+        // stored during handle_initialize when the client sends root information.
+
+        Ok(json!({ "roots": Vec::<serde_json::Value>::new() }))
+    }
+
     /// Handle tools/call request.
     async fn handle_tools_call(&self, params: &serde_json::Value) -> Result<serde_json::Value> {
         let call_params: CallToolParams = serde_json::from_value(params.clone())
             .context("Failed to parse tool call parameters")?;
 
         // Look up the tool in cache or try to load it
-        let script_path = {
+        let (script_path, auth_config) = {
             let cached = self.cached_tools.lock().unwrap();
             if let Some(tool) = cached.get(&call_params.name) {
-                tool.script_path.clone()
+                (tool.script_path.clone(), tool.auth_config.clone())
             } else {
                 drop(cached);
                 // Reload tools and look again
                 let mut cached = self.cached_tools.lock().unwrap();
                 *cached = self.load_tools()?;
                 match cached.get(&call_params.name) {
-                    Some(tool) => tool.script_path.clone(),
+                    Some(tool) => (tool.script_path.clone(), tool.auth_config.clone()),
                     None => return Err(anyhow::anyhow!("Tool '{}' not found", call_params.name)),
                 }
             }
         };
+
+        // Resolve credentials if auth is configured for this tool
+        if let Some(ref _config) = auth_config
+            && let Some(ref tools_dir) = self.tools_dir
+        {
+            match CredentialResolver::resolve_for_tool(tools_dir, &call_params.name) {
+                Ok(creds) => {
+                    debug!(
+                        "Resolved {} credential(s) for tool '{}'",
+                        creds.len(),
+                        call_params.name
+                    );
+
+                    // Validate credentials are present before proceeding
+                    if !creds.is_empty() {
+                        info!(
+                            "Credentials validated successfully for tool '{}'",
+                            call_params.name
+                        );
+                    }
+                }
+                Err(e) => {
+                    return Err(anyhow::anyhow!(
+                        "Credential resolution failed for tool '{}': {}",
+                        call_params.name,
+                        e
+                    ));
+                }
+            }
+        }
 
         // Prepare the input JSON for the script
         let input = json!({

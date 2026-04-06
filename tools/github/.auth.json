@@ -1,0 +1,6 @@
+{
+  "name": "github",
+  "strategy": "env_var",
+  "required_env_vars": ["GITHUB_TOKEN"],
+  "description": "GitHub API access tool"
+}
