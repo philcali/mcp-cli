@@ -180,8 +180,20 @@ impl McpServer {
                 "Client supports roots listing: {:?}",
                 roots_cap.list_changed
             );
-            // Note: In a full implementation, the client would send root information
-            // during initialize that we'd parse and store here.
+        }
+
+        // Store roots provided by the client during initialization.
+        // These are paths on the client's machine that the server can access via resources/tools.
+        if let Some(ref roots) = init_params.roots {
+            info!("Received {} root directory(ies) from client", roots.len());
+            for root in roots {
+                self.add_root(root.uri.clone(), root.name.clone());
+            }
+        }
+
+        // Validate protocol version (simplified check)
+        if !init_params.protocol_version.starts_with("2024-") {
+            return Err(anyhow::anyhow!("Unsupported protocol version"));
         }
 
         // Validate protocol version (simplified check)
@@ -488,7 +500,12 @@ impl McpServer {
             _ if !initialized => Err(anyhow::anyhow!("Server not initialized")),
             "initialized" => Ok(json!({})),
             "ping" => Ok(json!({})),
-            "roots/list" => self.handle_roots_list().await,
+            "roots/list" => {
+                if !initialized {
+                    return Err(anyhow::anyhow!("Server not initialized"));
+                }
+                self.handle_roots_list().await
+            }
             "tools/list" => self.handle_tools_list().await,
             "tools/call" => self.handle_tools_call(params).await,
             "resources/read" => self.handle_resources_read(params).await,
@@ -547,12 +564,19 @@ impl McpServer {
     async fn handle_roots_list(&self) -> Result<serde_json::Value> {
         info!("Handling roots list request");
 
-        // In MCP, roots are provided by the client during initialization via
-        // ClientCapabilities.roots. The server lists them back to confirm access.
-        // For now, we return an empty list - in a real scenario, these would be
-        // stored during handle_initialize when the client sends root information.
+        let roots = self.roots.lock().unwrap();
+        let roots_list: Vec<_> = roots
+            .iter()
+            .map(|root| {
+                if let Some(ref _name) = root._name {
+                    json!({ "uri": root.uri, "name": _name })
+                } else {
+                    json!({ "uri": root.uri })
+                }
+            })
+            .collect();
 
-        Ok(json!({ "roots": Vec::<serde_json::Value>::new() }))
+        Ok(json!({ "roots": roots_list }))
     }
 
     /// Handle tools/call request.

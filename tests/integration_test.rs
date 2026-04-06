@@ -428,3 +428,92 @@ fn test_resources_read_not_found() {
         "Expected error for non-existent resource"
     );
 }
+
+#[test]
+fn test_roots_list_before_initialize() {
+    let response = run_request("roots/list", None, 10);
+
+    assert!(
+        response.get("error").is_some(),
+        "Expected error before initialize"
+    );
+    assert_eq!(response["id"], serde_json::Value::Number(10.into()));
+}
+
+#[test]
+fn test_roots_list_with_client_roots() {
+    // Client sends roots during initialization
+    let init_params = serde_json::json!({
+        "protocolVersion": "2024-11-05",
+        "capabilities": {
+            "roots": {
+                "listChanged": true
+            }
+        },
+        "clientInfo": {
+            "name": "test-client",
+            "version": "1.0"
+        },
+        "roots": [
+            { "uri": "file:///home/user/project", "name": "project" },
+            { "uri": "file:///tmp/data" }
+        ]
+    });
+
+    let results = run_request_sequence(
+        None,
+        vec![("initialize", Some(&init_params)), ("roots/list", None)],
+    );
+
+    assert_eq!(results.len(), 2);
+
+    // Check initialization succeeded
+    assert!(
+        results[0].get("result").is_some(),
+        "Expected successful initialize"
+    );
+
+    // Check roots/list returns the client-provided roots
+    let roots_result = &results[1]["result"];
+    let roots_array = roots_result["roots"].as_array().unwrap();
+
+    assert_eq!(roots_array.len(), 2, "Should return both root directories");
+
+    // Verify first root has name
+    assert_eq!(roots_array[0]["uri"], "file:///home/user/project");
+    assert_eq!(roots_array[0]["name"], "project");
+
+    // Verify second root without name (should not have name field or be null)
+    assert_eq!(roots_array[1]["uri"], "file:///tmp/data");
+}
+
+#[test]
+fn test_roots_list_without_client_roots_capability() {
+    // Client initializes without roots capability but server still supports it
+    let init_params = serde_json::json!({
+        "protocolVersion": "2024-11-05",
+        "capabilities": {},
+        "clientInfo": {
+            "name": "test-client",
+            "version": "1.0"
+        }
+    });
+
+    let results = run_request_sequence(
+        None,
+        vec![("initialize", Some(&init_params)), ("roots/list", None)],
+    );
+
+    assert_eq!(results.len(), 2);
+
+    // Initialization should succeed (server has roots capability)
+    assert!(
+        results[0].get("result").is_some(),
+        "Expected successful initialize"
+    );
+
+    // Roots list returns empty since client didn't provide any
+    let roots_result = &results[1]["result"];
+    let roots_array = roots_result["roots"].as_array().unwrap();
+    assert_eq!(roots_array.len(), 0, "Should return empty list");
+}
