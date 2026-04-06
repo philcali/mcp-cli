@@ -76,6 +76,9 @@ pub struct InitParams {
     pub capabilities: ClientCapabilities,
     #[serde(default, rename = "clientInfo")]
     pub client_info: Implementation,
+    /// Root directories provided by the client. These are paths the server can access.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub roots: Option<Vec<Root>>,
 }
 
 /// Initialize result sent to client.
@@ -163,13 +166,30 @@ impl ServerCapabilities {
 }
 
 /// Client-provided root directory.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Root {
-    /// Path to the root directory.
+    /// URI of the root directory (e.g., file:///path/to/root).
+    #[serde(rename = "uri")]
     pub uri: String,
     /// Optional name for the root.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", rename = "name")]
     pub name: Option<String>,
+}
+
+impl Root {
+    pub fn new(uri: &str) -> Self {
+        Self {
+            uri: uri.to_string(),
+            name: None,
+        }
+    }
+
+    pub fn with_name(uri: &str, name: &str) -> Self {
+        Self {
+            uri: uri.to_string(),
+            name: Some(name.to_string()),
+        }
+    }
 }
 
 /// Resource read result.
