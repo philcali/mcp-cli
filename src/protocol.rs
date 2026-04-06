@@ -103,6 +103,14 @@ pub struct RootsCapability {
     pub list_changed: Option<bool>,
 }
 
+/// Server-side roots capability - indicates server can list client root directories.
+#[derive(Debug, Clone, Serialize)]
+pub struct RootsCapabilityServer {
+    /// Whether the server supports listing root directories provided by the client.
+    #[serde(rename = "listChanged")]
+    pub list_changed: bool,
+}
+
 /// Server capabilities object.
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct ServerCapabilities {
@@ -114,6 +122,8 @@ pub struct ServerCapabilities {
     pub prompts: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resources: Option<ResourcesCapability>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub roots: Option<RootsCapabilityServer>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<bool>,
 }
@@ -142,9 +152,27 @@ impl ServerCapabilities {
         self.logging = Some(true);
         self
     }
+
+    /// Enable roots capability (client root directories for file access).
+    pub fn with_roots(mut self) -> Self {
+        self.roots = Some(RootsCapabilityServer {
+            list_changed: false,
+        });
+        self
+    }
 }
 
-/// Resources capability.
+/// Client-provided root directory.
+#[derive(Debug, Clone, Serialize)]
+pub struct Root {
+    /// Path to the root directory.
+    pub uri: String,
+    /// Optional name for the root.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+/// Resource read result.
 #[derive(Debug, Clone, Serialize)]
 pub struct ResourcesCapability {
     #[serde(rename = "listChanged")]
@@ -371,4 +399,65 @@ pub struct PromptArgument {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub required: Option<bool>,
+}
+
+/// Authentication strategy for a tool.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthStrategy {
+    /// Environment variable injection (e.g., GITHUB_TOKEN)
+    EnvVar,
+    /// OAuth2 flow with token caching - EXPERIMENTAL
+    #[serde(rename = "oauth2")]
+    OAuth2,
+    /// API key passed as custom header - EXPERIMENTAL
+    #[serde(rename = "api_key_header")]
+    ApiKeyHeader,
+    /// Bearer token in Authorization header - EXPERIMENTAL
+    #[serde(rename = "bearer_token")]
+    BearerToken,
+}
+
+/// OAuth2 configuration for a tool.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct OAuthConfig {
+    pub client_id_env: String,
+    pub token_url: String,
+    #[serde(default)]
+    pub scopes: Vec<String>,
+}
+
+/// Authentication configuration for a tool.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ToolAuthConfig {
+    /// The authentication strategy used by this tool
+    #[serde(default = "default_strategy")]
+    pub strategy: AuthStrategy,
+    /// Environment variables required for authentication
+    #[serde(default)]
+    pub required_env_vars: Vec<String>,
+    /// OAuth2 configuration (only used if strategy is oauth2)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oauth_config: Option<OAuthConfig>,
+}
+
+fn default_strategy() -> AuthStrategy {
+    AuthStrategy::EnvVar // Default to simple env var injection
+}
+
+/// Load tool auth config from a file path.
+pub fn load_tool_auth_config(path: &std::path::Path) -> anyhow::Result<Option<ToolAuthConfig>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let content = std::fs::read_to_string(path)?;
+    let config: ToolAuthConfig = serde_json::from_str(&content)?;
+    Ok(Some(config))
+}
+
+/// Load tool auth config from JSON string.
+pub fn parse_tool_auth_config(json: &str) -> anyhow::Result<ToolAuthConfig> {
+    let config: ToolAuthConfig = serde_json::from_str(json)?;
+    Ok(config)
 }
