@@ -1,0 +1,26 @@
+{
+  "name": "debug-error",
+  "description": "Help debug and troubleshoot errors",
+  "arguments": [
+    {
+      "name": "error_message",
+      "required": true,
+      "description": "The error message or stack trace"
+    },
+    {
+      "name": "context",
+      "required": false,
+      "description": "Additional context about what you were doing when the error occurred"
+    }
+  ],
+  "messages": [
+    {
+      "role": "system",
+      "content": "You are an expert debugger. Analyze error messages and stack traces to help identify root causes and suggest fixes."
+    },
+    {
+      "role": "user",
+      "content": "I encountered this error:\n\n```\n{{error_message}}\n```\n\nContext: {{context}}\n\nHelp me understand what went wrong and how to fix it."
+    }
+  ]
+}

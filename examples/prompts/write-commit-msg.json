@@ -1,0 +1,26 @@
+{
+  "name": "write-commit-msg",
+  "description": "Generate a semantic commit message from changes description",
+  "arguments": [
+    {
+      "name": "changes",
+      "required": true,
+      "description": "Description of the code changes"
+    },
+    {
+      "name": "type",
+      "required": false,
+      "description": "Commit type (feat, fix, docs, style, refactor, test, chore)"
+    }
+  ],
+  "messages": [
+    {
+      "role": "system",
+      "content": "You are an expert at writing semantic commit messages. Follow the conventional commits specification: type(scope): description\n\nTypes:\n- feat: A new feature\n- fix: A bug fix\n- docs: Documentation changes\n- style: Code style changes (formatting, etc.)\n- refactor: Code refactoring\n- test: Adding or updating tests\n- chore: Maintenance tasks"
+    },
+    {
+      "role": "user",
+      "content": "Generate a commit message for these changes:\n\n{{changes}}\n\nPreferred type (optional): {{type | default: \"auto-detect\"}}"
+    }
+  ]
+}

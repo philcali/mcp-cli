@@ -6,18 +6,22 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
 
-/// Spawn the MCP server with optional resources directory.
-fn run_request_with_resources(
+/// Spawn the MCP server with optional resources and prompts directories.
+fn run_request_with_dirs(
     method: &str,
     params: Option<&serde_json::Value>,
     id: i64,
     resources_dir: Option<PathBuf>,
+    prompts_dir: Option<PathBuf>,
 ) -> serde_json::Value {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_mcp-cli"));
 
-    // Add resources directory argument if provided (use --resources-dir flag for tests)
+    // Add directories if provided
     if let Some(ref dir) = resources_dir {
         cmd.arg("--resources-dir").arg(dir.to_str().unwrap());
+    }
+    if let Some(ref dir) = prompts_dir {
+        cmd.arg("--prompts-dir").arg(dir.to_str().unwrap());
     }
 
     let child = cmd
@@ -30,7 +34,7 @@ fn run_request_with_resources(
     send_request_and_read_response(child, method, params, id)
 }
 
-/// Send a single request and read response (helper for run_request_with_resources).
+/// Send a single request and read response (helper for run_request_with_dirs).
 fn send_request_and_read_response(
     mut child: std::process::Child,
     method: &str,
@@ -78,13 +82,17 @@ fn send_request_and_read_response(
 /// Spawn server and send multiple requests (for multi-step test flows).
 fn run_request_sequence(
     resources_dir: Option<PathBuf>,
+    prompts_dir: Option<PathBuf>,
     requests: Vec<(&str, Option<&serde_json::Value>)>,
 ) -> Vec<serde_json::Value> {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_mcp-cli"));
 
-    // Add resources directory argument if provided (use --resources-dir flag for tests)
+    // Add directories if provided
     if let Some(ref dir) = resources_dir {
         cmd.arg("--resources-dir").arg(dir.to_str().unwrap());
+    }
+    if let Some(ref dir) = prompts_dir {
+        cmd.arg("--prompts-dir").arg(dir.to_str().unwrap());
     }
 
     let mut child = cmd
@@ -133,9 +141,25 @@ fn run_request_sequence(
     results
 }
 
+/// Wrapper for prompt tests with prompts_dir only.
+fn run_request_sequence_with_prompts(
+    prompts_dir: PathBuf,
+    requests: Vec<(&str, Option<&serde_json::Value>)>,
+) -> Vec<serde_json::Value> {
+    run_request_sequence(None, Some(prompts_dir), requests)
+}
+
+/// Wrapper for resources tests with resources_dir only.
+fn run_request_sequence_with_resources(
+    resources_dir: PathBuf,
+    requests: Vec<(&str, Option<&serde_json::Value>)>,
+) -> Vec<serde_json::Value> {
+    run_request_sequence(Some(resources_dir), None, requests)
+}
+
 /// Spawn the MCP server and run a single request-response cycle.
 fn run_request(method: &str, params: Option<&serde_json::Value>, id: i64) -> serde_json::Value {
-    run_request_with_resources(method, params, id, None)
+    run_request_with_dirs(method, params, id, None, None)
 }
 
 /// Setup test resources directory with sample files.
@@ -275,11 +299,12 @@ fn test_resources_list_with_directory() {
     let _response = run_request("initialize", Some(&params), 1);
 
     // Now list resources from the temp directory
-    let response = run_request_with_resources(
+    let response = run_request_with_dirs(
         "resources/list",
         None,
         2,
         Some(temp_dir.path().to_path_buf()),
+        None,
     );
 
     assert_eq!(response["jsonrpc"], "2.0");
@@ -332,8 +357,8 @@ fn test_resources_read_text_file() {
         "uri": format!("file://{}/hello.txt", temp_dir.path().display())
     });
 
-    let results = run_request_sequence(
-        Some(temp_dir.path().to_path_buf()),
+    let results = run_request_sequence_with_resources(
+        temp_dir.path().to_path_buf(),
         vec![
             ("initialize", Some(&params)),
             ("resources/read", Some(&read_params)),
@@ -374,8 +399,8 @@ fn test_resources_read_json_file() {
         "uri": format!("file://{}/config.json", temp_dir.path().display())
     });
 
-    let results = run_request_sequence(
-        Some(temp_dir.path().to_path_buf()),
+    let results = run_request_sequence_with_resources(
+        temp_dir.path().to_path_buf(),
         vec![
             ("initialize", Some(&params)),
             ("resources/read", Some(&read_params)),
@@ -415,6 +440,7 @@ fn test_resources_read_not_found() {
     });
 
     let results = run_request_sequence(
+        None,
         None,
         vec![
             ("initialize", Some(&params)),
@@ -462,6 +488,7 @@ fn test_roots_list_with_client_roots() {
 
     let results = run_request_sequence(
         None,
+        None,
         vec![("initialize", Some(&init_params)), ("roots/list", None)],
     );
 
@@ -501,6 +528,7 @@ fn test_roots_list_without_client_roots_capability() {
 
     let results = run_request_sequence(
         None,
+        None,
         vec![("initialize", Some(&init_params)), ("roots/list", None)],
     );
 
@@ -516,4 +544,232 @@ fn test_roots_list_without_client_roots_capability() {
     let roots_result = &results[1]["result"];
     let roots_array = roots_result["roots"].as_array().unwrap();
     assert_eq!(roots_array.len(), 0, "Should return empty list");
+}
+
+/// Setup test prompts directory with sample prompt files.
+fn setup_test_prompts() -> TempDir {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+
+    // Create a code review prompt
+    fs::write(
+        temp_dir.path().join("code-review.json"),
+        r#"{
+            "name": "code-review",
+            "description": "Review code for bugs and improvements",
+            "arguments": [
+                {"name": "language", "required": false},
+                {"name": "code", "required": true}
+            ],
+            "messages": [
+                {"role": "system", "content": "You are a code reviewer."},
+                {"role": "user", "content": "Review this {{language}} code: {{code}}"}
+            ]
+        }"#,
+    )
+    .unwrap();
+
+    // Create a debug prompt with required args only
+    fs::write(
+        temp_dir.path().join("debug.json"),
+        r#"{
+            "name": "debug",
+            "description": "Debug errors",
+            "arguments": [
+                {"name": "error", "required": true}
+            ],
+            "messages": [
+                {"role": "system", "content": "Help debug this error."},
+                {"role": "user", "content": "{{error}}"}
+            ]
+        }"#,
+    )
+    .unwrap();
+
+    temp_dir
+}
+
+#[test]
+fn test_prompts_list_before_initialize() {
+    let response = run_request("prompts/list", None, 1);
+
+    assert!(
+        response.get("error").is_some(),
+        "Expected error before initialize"
+    );
+    assert_eq!(response["id"], serde_json::Value::Number(1.into()));
+}
+
+#[test]
+fn test_prompts_list_with_directory() {
+    let temp_dir = setup_test_prompts();
+
+    // Initialize first
+    let params = serde_json::json!({
+        "protocolVersion": "2024-11-05",
+        "capabilities": {},
+        "clientInfo": {
+            "name": "test-client",
+            "version": "1.0"
+        }
+    });
+
+    // Initialize and list prompts on same server process
+    let results = run_request_sequence_with_prompts(
+        temp_dir.path().to_path_buf(),
+        vec![("initialize", Some(&params)), ("prompts/list", None)],
+    );
+
+    assert_eq!(results.len(), 2);
+    assert!(
+        results[0].get("result").is_some(),
+        "Expected successful initialize"
+    );
+
+    // Now check prompts list result
+    let response = &results[1];
+
+    assert_eq!(response["jsonrpc"], "2.0");
+    assert!(
+        response.get("result").is_some(),
+        "Expected result for prompts/list"
+    );
+
+    let result = response["result"].as_object().unwrap();
+    let prompts = result["prompts"].as_array().unwrap();
+
+    // Should have 2 prompt files
+    assert_eq!(prompts.len(), 2, "Should discover all 2 prompt files");
+
+    // Check that we found the expected prompts
+    let names: Vec<&str> = prompts
+        .iter()
+        .map(|p| p["name"].as_str().unwrap())
+        .collect();
+
+    assert!(names.contains(&"code-review"), "Should include code-review");
+    assert!(names.contains(&"debug"), "Should include debug");
+}
+
+#[test]
+fn test_prompts_get_with_args() {
+    let temp_dir = setup_test_prompts();
+
+    // Initialize and get prompt in sequence
+    let init_params = serde_json::json!({
+        "protocolVersion": "2024-11-05",
+        "capabilities": {},
+        "clientInfo": {
+            "name": "test-client",
+            "version": "1.0"
+        }
+    });
+
+    let get_params = serde_json::json!({
+        "name": "code-review",
+        "arguments": {
+            "language": "rust",
+            "code": "fn main() { println!(\"Hello\"); }"
+        }
+    });
+
+    let results = run_request_sequence_with_prompts(
+        temp_dir.path().to_path_buf(),
+        vec![
+            ("initialize", Some(&init_params)),
+            ("prompts/get", Some(&get_params)),
+        ],
+    );
+
+    assert_eq!(results.len(), 2);
+    assert!(
+        results[1].get("result").is_some(),
+        "Expected result for prompts/get, got error: {:?}",
+        results[1].get("error")
+    );
+
+    let result = results[1]["result"].as_object().unwrap();
+    assert_eq!(
+        result["description"],
+        "Review code for bugs and improvements"
+    );
+
+    let messages = result["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 2);
+
+    // Check that variables were substituted
+    let user_msg = &messages[1]["content"];
+    assert!(user_msg.as_str().unwrap().contains("rust"));
+    assert!(user_msg.as_str().unwrap().contains("fn main()"));
+}
+
+#[test]
+fn test_prompts_get_missing_required_arg() {
+    let temp_dir = setup_test_prompts();
+
+    // Initialize first
+    let init_params = serde_json::json!({
+        "protocolVersion": "2024-11-05",
+        "capabilities": {},
+        "clientInfo": {
+            "name": "test-client",
+            "version": "1.0"
+        }
+    });
+
+    // Try to get debug prompt without required 'error' argument
+    let get_params = serde_json::json!({
+        "name": "debug",
+        "arguments": {}
+    });
+
+    let results = run_request_sequence_with_prompts(
+        temp_dir.path().to_path_buf(),
+        vec![
+            ("initialize", Some(&init_params)),
+            ("prompts/get", Some(&get_params)),
+        ],
+    );
+
+    assert_eq!(results.len(), 2);
+    assert!(
+        results[1].get("error").is_some(),
+        "Expected error for missing required argument"
+    );
+}
+
+#[test]
+fn test_prompts_get_not_found() {
+    let temp_dir = setup_test_prompts();
+
+    // Initialize first
+    let init_params = serde_json::json!({
+        "protocolVersion": "2024-11-05",
+        "capabilities": {},
+        "clientInfo": {
+            "name": "test-client",
+            "version": "1.0"
+        }
+    });
+
+    // Try to get non-existent prompt
+    let get_params = serde_json::json!({
+        "name": "nonexistent-prompt",
+        "arguments": {}
+    });
+
+    let results = run_request_sequence_with_prompts(
+        temp_dir.path().to_path_buf(),
+        vec![
+            ("initialize", Some(&init_params)),
+            ("prompts/get", Some(&get_params)),
+        ],
+    );
+
+    assert_eq!(results.len(), 2);
+    eprintln!("Non-existent prompt response: {:?}", results[1]);
+    assert!(
+        results[1].get("error").is_some(),
+        "Expected error for non-existent prompt, got: {:?}",
+        results[1]
+    );
 }

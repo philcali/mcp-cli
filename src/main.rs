@@ -21,6 +21,10 @@ struct Cli {
     /// Directory path for resources
     #[arg(long, short)]
     resources_dir: Option<std::path::PathBuf>,
+
+    /// Directory path for prompts
+    #[arg(long, short)]
+    prompts_dir: Option<std::path::PathBuf>,
 }
 
 #[tokio::main]
@@ -46,6 +50,12 @@ async fn main() -> Result<()> {
     if let Some(resources_dir) = cli.resources_dir {
         info!("Using resources directory: {:?}", resources_dir);
         builder = builder.with_resources_dir(resources_dir);
+    }
+
+    if let Some(prompts_dir) = cli.prompts_dir {
+        info!("Using prompts directory: {:?}", prompts_dir);
+        builder = builder.with_prompts();
+        builder = builder.with_prompts_dir(prompts_dir);
     }
 
     let mut srv = builder.build();

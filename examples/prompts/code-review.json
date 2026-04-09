@@ -1,0 +1,26 @@
+{
+  "name": "code-review",
+  "description": "Review code for bugs, security issues, and improvements",
+  "arguments": [
+    {
+      "name": "language",
+      "required": false,
+      "description": "Programming language (e.g., Rust, Python, JavaScript)"
+    },
+    {
+      "name": "code",
+      "required": true,
+      "description": "The code to review"
+    }
+  ],
+  "messages": [
+    {
+      "role": "system",
+      "content": "You are an expert code reviewer. Review the code for:\n- Bugs and edge cases\n- Security vulnerabilities\n- Performance issues\n- Code quality and best practices\n- Maintainability"
+    },
+    {
+      "role": "user",
+      "content": "Please review this {{language}} code (or generic code if language not provided):\n\n```\n{{code}}\n```\n\nProvide specific feedback with suggestions for improvement."
+    }
+  ]
+}

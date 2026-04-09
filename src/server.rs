@@ -17,6 +17,15 @@ struct Root {
     _name: Option<String>,
 }
 
+/// Entry for a discovered prompt.
+#[derive(Debug, Clone)]
+struct PromptEntry {
+    name: String,
+    description: Option<String>,
+    arguments: Option<Vec<crate::protocol::PromptArgument>>,
+    file_path: PathBuf,
+}
+
 /// Server state and configuration.
 pub struct McpServer {
     name: String,
@@ -30,6 +39,10 @@ pub struct McpServer {
     resources_dir: Option<PathBuf>,
     /// Cached resource list
     cached_resources: Mutex<Vec<ResourceEntry>>,
+    /// Path to prompts directory (optional)
+    prompts_dir: Option<PathBuf>,
+    /// Cached prompt list
+    cached_prompts: Mutex<HashMap<String, PromptEntry>>,
     /// Client-provided root directories for file access
     roots: Mutex<Vec<Root>>,
 }
@@ -151,6 +164,8 @@ impl McpServer {
             cached_tools: Mutex::new(HashMap::new()),
             resources_dir: None,
             cached_resources: Mutex::new(Vec::new()),
+            prompts_dir: None,
+            cached_prompts: Mutex::new(HashMap::new()),
             roots: Mutex::new(Vec::new()),
         }
     }
@@ -385,6 +400,73 @@ impl McpServer {
         self
     }
 
+    /// Enable prompts capability.
+    pub fn enable_prompts(mut self) -> Self {
+        self.capabilities.prompts = Some(true);
+        self
+    }
+
+    /// Set the prompts directory path for dynamic prompt discovery.
+    pub fn enable_prompts_dir(mut self, path: PathBuf) -> Self {
+        self.prompts_dir = Some(path);
+        self
+    }
+
+    /// Load prompts from the prompts directory.
+    fn load_prompts(&self) -> Result<HashMap<String, PromptEntry>> {
+        let dir = match &self.prompts_dir {
+            Some(p) => p,
+            None => return Ok(HashMap::new()),
+        };
+
+        if !dir.exists() {
+            warn!("Prompts directory does not exist: {:?}", dir);
+            return Ok(HashMap::new());
+        }
+
+        let mut prompts = HashMap::new();
+
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+
+            // Skip directories and non-JSON files
+            if !path.is_file() || path.extension().and_then(|s| s.to_str()) != Some("json") {
+                continue;
+            }
+
+            // Read and parse the prompt file
+            let content = match std::fs::read_to_string(&path) {
+                Ok(c) => c,
+                Err(e) => {
+                    warn!("Failed to read prompt file {:?}: {}", path, e);
+                    continue;
+                }
+            };
+
+            let prompt_file: crate::protocol::PromptFile = match serde_json::from_str(&content) {
+                Ok(p) => p,
+                Err(e) => {
+                    warn!("Failed to parse prompt file {:?}: {}", path, e);
+                    continue;
+                }
+            };
+
+            prompts.insert(
+                prompt_file.name.clone(),
+                PromptEntry {
+                    name: prompt_file.name,
+                    description: prompt_file.description,
+                    arguments: prompt_file.arguments,
+                    file_path: path,
+                },
+            );
+        }
+
+        info!("Loaded {} prompts", prompts.len());
+        Ok(prompts)
+    }
+
     /// Run the server loop on stdio transport.
     pub async fn run(&mut self) -> Result<()> {
         let stdin = tokio::io::stdin();
@@ -509,6 +591,8 @@ impl McpServer {
             "tools/list" => self.handle_tools_list().await,
             "tools/call" => self.handle_tools_call(params).await,
             "resources/read" => self.handle_resources_read(params).await,
+            "prompts/list" => self.handle_prompts_list().await,
+            "prompts/get" => self.handle_prompts_get(params).await,
             _ => Err(anyhow::anyhow!("Unknown method: {}", method)),
         }
     }
@@ -577,6 +661,131 @@ impl McpServer {
             .collect();
 
         Ok(json!({ "roots": roots_list }))
+    }
+
+    /// Handle prompts/list request.
+    async fn handle_prompts_list(&self) -> Result<serde_json::Value> {
+        let mut cached = self.cached_prompts.lock().unwrap();
+
+        // Load prompts from directory if not already cached and directory is configured
+        if cached.is_empty() && self.prompts_dir.is_some() {
+            *cached = self.load_prompts()?;
+        }
+
+        let prompt_list: Vec<_> = cached
+            .values()
+            .map(|p| {
+                json!({
+                    "name": p.name,
+                    "description": p.description,
+                    "arguments": p.arguments.as_ref().map(|args| {
+                        args.iter().map(|a| json!({
+                            "name": a.name,
+                            "required": a.required.unwrap_or(false),
+                        })).collect::<Vec<_>>()
+                    }),
+                })
+            })
+            .collect();
+
+        Ok(json!({ "prompts": prompt_list }))
+    }
+
+    /// Handle prompts/get request.
+    async fn handle_prompts_get(&self, params: &serde_json::Value) -> Result<serde_json::Value> {
+        let get_params: crate::protocol::GetPromptParams =
+            serde_json::from_value(params.clone())
+                .context("Failed to parse prompt get parameters")?;
+
+        // Look up the prompt in cache or try to load it
+        let entry = {
+            let cached = self.cached_prompts.lock().unwrap();
+            if let Some(prompt) = cached.get(&get_params.name) {
+                prompt.clone()
+            } else {
+                drop(cached);
+                // Reload prompts and look again
+                let mut cached = self.cached_prompts.lock().unwrap();
+                *cached = self.load_prompts()?;
+                match cached.get(&get_params.name) {
+                    Some(prompt) => prompt.clone(),
+                    None => return Err(anyhow::anyhow!("Prompt '{}' not found", get_params.name)),
+                }
+            }
+        };
+
+        // Validate required arguments if prompt has them
+        if let Some(ref required_args) = entry.arguments {
+            crate::protocol::validate_prompt_arguments(&get_params.arguments, required_args)
+                .map_err(|e| anyhow::anyhow!("{}", e))?;
+        }
+
+        // Read the prompt template file
+        let content = std::fs::read_to_string(&entry.file_path)?;
+        let prompt_file: crate::protocol::PromptFile = serde_json::from_str(&content)?;
+
+        // Render templates with provided arguments
+        let engine = crate::protocol::PromptTemplateEngine::new();
+        let base_dir = entry.file_path.parent();
+
+        let messages: Vec<crate::protocol::PromptMessage> = match prompt_file.messages {
+            Some(messages) => messages
+                .into_iter()
+                .map(|msg| {
+                    // Render each message content
+                    let rendered_content = match &msg.content {
+                        crate::protocol::PromptMessageContentValue::Array(items) => {
+                            crate::protocol::PromptMessageContentValue::Array(
+                                items
+                                    .iter()
+                                    .cloned()
+                                    .map(|item| {
+                                        match item {
+                                            crate::protocol::PromptMessageContentItem::Text {
+                                                text,
+                                            } => {
+                                                let rendered = engine
+                                                    .render(&text, &get_params.arguments, base_dir)
+                                                    .unwrap_or_else(|e| {
+                                                        format!("[Render error: {}]", e)
+                                                    });
+                                                crate::protocol::PromptMessageContentItem::Text {
+                                                    text: rendered,
+                                                }
+                                            }
+                                            other => other, // Keep non-text items as-is
+                                        }
+                                    })
+                                    .collect(),
+                            )
+                        }
+                        crate::protocol::PromptMessageContentValue::Text(text) => {
+                            let rendered = engine
+                                .render(text, &get_params.arguments, base_dir)
+                                .unwrap_or_else(|e| format!("[Render error: {}]", e));
+                            crate::protocol::PromptMessageContentValue::Text(rendered)
+                        }
+                    };
+
+                    crate::protocol::PromptMessage {
+                        role: msg.role,
+                        content_value: rendered_content,
+                    }
+                })
+                .collect(),
+            None => {
+                return Err(anyhow::anyhow!(
+                    "Prompt '{}' has no messages",
+                    get_params.name
+                ));
+            }
+        };
+
+        let result = crate::protocol::GetPromptResult {
+            description: entry.description,
+            messages,
+        };
+        Ok(json!(result))
     }
 
     /// Handle tools/call request.
@@ -773,6 +982,8 @@ pub struct ServerBuilder {
     enable_resources: bool,
     resources_list_changed: bool,
     resources_dir: Option<std::path::PathBuf>,
+    enable_prompts: bool,
+    prompts_dir: Option<std::path::PathBuf>,
 }
 
 impl ServerBuilder {
@@ -785,6 +996,8 @@ impl ServerBuilder {
             enable_resources: false,
             resources_list_changed: false,
             resources_dir: None,
+            enable_prompts: false,
+            prompts_dir: None,
         }
     }
 
@@ -809,6 +1022,16 @@ impl ServerBuilder {
         self
     }
 
+    pub fn with_prompts(mut self) -> Self {
+        self.enable_prompts = true;
+        self
+    }
+
+    pub fn with_prompts_dir<P: Into<std::path::PathBuf>>(mut self, path: P) -> Self {
+        self.prompts_dir = Some(path.into());
+        self
+    }
+
     pub fn build(self) -> McpServer {
         let mut server = McpServer::new(&self.name, &self.version);
         if self.enable_tools {
@@ -822,6 +1045,12 @@ impl ServerBuilder {
         }
         if let Some(ref path) = self.resources_dir {
             server = server.enable_resources_dir(path.clone());
+        }
+        if self.enable_prompts {
+            server = server.enable_prompts();
+        }
+        if let Some(ref path) = self.prompts_dir {
+            server = server.enable_prompts_dir(path.clone());
         }
         server
     }
