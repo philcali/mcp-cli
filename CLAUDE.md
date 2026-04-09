@@ -41,6 +41,7 @@ The codebase uses a minimal architecture with four main modules:
 - JSON-RPC 2.0 request/response structures (`JsonRpcRequest`, `JsonRpcResponse`)
 - Error handling (`JsonRpcError` with standard error codes)
 - MCP-specific types (capabilities, tools, resources, prompts)
+- Prompt template engine and rendering utilities
 - Content types for tool results and resource contents
 
 **src/lib.rs** - Library root exposing protocol and server modules. Note: the tools module is not exposed publicly despite existing in codebase.
@@ -75,6 +76,20 @@ The server supports dynamic tool discovery from a configured tools directory:
 5. Tool output is captured from stdout and returned as text content
 
 Tools are cached after first discovery for subsequent `tools/list` calls.
+
+## Prompt Discovery
+
+The server supports dynamic prompt discovery from a configured prompts directory:
+
+1. Set a prompts directory using `ServerBuilder.with_prompts_dir(path)` or CLI flag `--prompts-dir <path>`
+2. The server scans for `.json` files in that directory
+3. Each JSON file becomes an available prompt, identified by its filename (without extension)
+4. Prompt templates support variable substitution: `{{variable}}`
+5. Template directives are supported: `{{#include path}}`, `{{#env VAR}}`
+
+Prompt files follow the MCP prompts specification with fields for name, description, arguments, and messages. Prompts are cached after first discovery.
+
+See [PROMPTS.md](PROMPTS.md) for detailed usage documentation.
 
 ## Testing
 
