@@ -102,7 +102,7 @@ fn run_request_sequence(
         .spawn()
         .expect("Failed to spawn mcp-cli");
 
-    let mut results = Vec::new();
+    let mut results: Vec<serde_json::Value> = Vec::new();
 
     if let Some(mut stdin) = child.stdin.take() {
         for (i, (method, params)) in requests.iter().enumerate() {
@@ -771,5 +771,180 @@ fn test_prompts_get_not_found() {
         results[1].get("error").is_some(),
         "Expected error for non-existent prompt, got: {:?}",
         results[1]
+    );
+}
+
+#[test]
+fn test_tools_call_with_directory() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+
+    fs::write(
+        temp_dir.path().join("echo-tool.sh"),
+        "#!/bin/bash\ninput=$(cat)\necho \"Echo: $input\"\n",
+    )
+    .unwrap();
+
+    std::fs::set_permissions(
+        temp_dir.path().join("echo-tool.sh"),
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .unwrap();
+
+    let init_params = serde_json::json!({
+        "protocolVersion": "2024-11-05",
+        "capabilities": {},
+        "clientInfo": {
+            "name": "test-client",
+            "version": "1.0"
+        }
+    });
+
+    let call_params = serde_json::json!({
+        "name": "echo-tool",
+        "arguments": {"message": "Hello MCP"}
+    });
+
+    // Use a custom helper since we need tools_dir
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_mcp-cli"));
+    cmd.arg("--tools-dir")
+        .arg(temp_dir.path().to_str().unwrap());
+
+    let mut child = cmd
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("Failed to spawn mcp-cli");
+
+    let requests = vec![
+        ("initialize", Some(&init_params)),
+        ("tools/call", Some(&call_params)),
+    ];
+
+    let mut results: Vec<serde_json::Value> = Vec::new();
+    if let Some(mut stdin) = child.stdin.take() {
+        for (i, (method, params)) in requests.iter().enumerate() {
+            let id = i as i64 + 1;
+            let req = serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": method,
+            });
+
+            let request = if let Some(p) = params {
+                let mut r = req.as_object().unwrap().clone();
+                r.insert("params".to_string(), (*p).clone());
+                serde_json::Value::Object(r)
+            } else {
+                req
+            };
+
+            writeln!(stdin, "{}", request).unwrap();
+        }
+    }
+
+    if let Some(stdout) = child.stdout.take() {
+        for line in std::io::BufReader::new(stdout)
+            .lines()
+            .map_while(|l| l.ok())
+        {
+            if line.trim_start().starts_with('{') {
+                results.push(serde_json::from_str(&line).expect("Failed to parse response"));
+            }
+        }
+    }
+
+    child.wait().unwrap();
+
+    assert_eq!(results.len(), 2);
+
+    let call_result = &results[1]["result"];
+    assert!(
+        call_result.get("content").is_some(),
+        "Should have content in result"
+    );
+
+    let content_array = call_result["content"].as_array().unwrap();
+    assert_eq!(content_array.len(), 1);
+
+    let text_content = &content_array[0]["text"];
+    assert!(text_content.as_str().unwrap().contains("Echo"));
+}
+
+#[test]
+fn test_tools_call_not_found() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+
+    let init_params = serde_json::json!({
+        "protocolVersion": "2024-11-05",
+        "capabilities": {},
+        "clientInfo": {
+            "name": "test-client",
+            "version": "1.0"
+        }
+    });
+
+    let call_params = serde_json::json!({
+        "name": "nonexistent-tool",
+        "arguments": {}
+    });
+
+    // Use a custom helper since we need tools_dir
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_mcp-cli"));
+    cmd.arg("--tools-dir")
+        .arg(temp_dir.path().to_str().unwrap());
+
+    let mut child = cmd
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("Failed to spawn mcp-cli");
+
+    let requests = vec![
+        ("initialize", Some(&init_params)),
+        ("tools/call", Some(&call_params)),
+    ];
+
+    let mut results: Vec<serde_json::Value> = Vec::new();
+    if let Some(mut stdin) = child.stdin.take() {
+        for (i, (method, params)) in requests.iter().enumerate() {
+            let id = i as i64 + 1;
+            let req = serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": method,
+            });
+
+            let request = if let Some(p) = params {
+                let mut r = req.as_object().unwrap().clone();
+                r.insert("params".to_string(), (*p).clone());
+                serde_json::Value::Object(r)
+            } else {
+                req
+            };
+
+            writeln!(stdin, "{}", request).unwrap();
+        }
+    }
+
+    if let Some(stdout) = child.stdout.take() {
+        for line in std::io::BufReader::new(stdout)
+            .lines()
+            .map_while(|l| l.ok())
+        {
+            if line.trim_start().starts_with('{') {
+                results.push(serde_json::from_str(&line).expect("Failed to parse response"));
+            }
+        }
+    }
+
+    child.wait().unwrap();
+
+    assert_eq!(results.len(), 2);
+
+    assert!(
+        results[1].get("error").is_some(),
+        "Expected error for non-existent tool"
     );
 }

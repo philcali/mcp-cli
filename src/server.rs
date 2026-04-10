@@ -593,6 +593,7 @@ impl McpServer {
             "resources/read" => self.handle_resources_read(params).await,
             "prompts/list" => self.handle_prompts_list().await,
             "prompts/get" => self.handle_prompts_get(params).await,
+            "notifications/initialized" => Ok(json!({})),
             _ => Err(anyhow::anyhow!("Unknown method: {}", method)),
         }
     }

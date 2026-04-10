@@ -293,11 +293,44 @@ impl Content {
 
 /// List tools request parameters.
 #[derive(Debug, Deserialize)]
-pub struct ListToolsParams;
+pub struct ListToolsParams {
+    #[serde(default)]
+    pub tool_names: Option<Vec<String>>,
+}
 
 impl Default for ListToolsParams {
     fn default() -> Self {
-        Self
+        Self { tool_names: None }
+    }
+}
+
+/// Tool list result.
+#[derive(Debug, Serialize)]
+pub struct ListToolsResult {
+    pub tools: Vec<ToolListItem>,
+}
+
+/// Tool list update notification.
+#[derive(Debug, Serialize)]
+pub struct ToolsListChangedNotification {
+    #[serde(rename = "method")]
+    pub method_value: String,
+    #[serde(rename = "jsonrpc")]
+    pub jsonrpc_version: String,
+}
+
+impl Default for ToolsListChangedNotification {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ToolsListChangedNotification {
+    pub fn new() -> Self {
+        Self {
+            method_value: "tools/listChanged".to_string(),
+            jsonrpc_version: "2.0".to_string(),
+        }
     }
 }
 
