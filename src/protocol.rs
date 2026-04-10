@@ -425,17 +425,11 @@ pub struct SubscribeResourceParams {
 }
 
 /// Result of subscribing to a resource.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Default)]
 pub struct SubscribeResourceResult {
     // MCP spec doesn't define any result fields for this method
     #[serde(skip_serializing)]
     _empty: (),
-}
-
-impl Default for SubscribeResourceResult {
-    fn default() -> Self {
-        Self { _empty: () }
-    }
 }
 
 /// Unsubscribe from resource change notifications.
@@ -446,28 +440,19 @@ pub struct UnsubscribeResourceParams {
 }
 
 /// Result of unsubscribing from a resource.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Default)]
 pub struct UnsubscribeResourceResult {
     // MCP spec doesn't define any result fields for this method
     #[serde(skip_serializing)]
     _empty: (),
 }
 
-impl Default for UnsubscribeResourceResult {
-    fn default() -> Self {
-        Self { _empty: () }
-    }
-}
-
 /// Resource list changed notification.
+#[derive(Debug, Default)]
 pub struct ResourcesListChangedNotification;
 
 impl ResourcesListChangedNotification {
     pub const METHOD_NAME: &'static str = "resources/listChanged";
-
-    pub fn new() -> Self {
-        Self
-    }
 
     /// Convert to JSON-RPC notification format.
     pub fn to_jsonrpc(&self) -> serde_json::Value {
