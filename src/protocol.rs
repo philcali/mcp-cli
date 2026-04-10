@@ -1,6 +1,7 @@
 //! MCP protocol types and JSON-RPC message definitions.
 
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use std::collections::HashMap;
 
 /// Base JSON-RPC 2.0 request structure.
@@ -411,6 +412,141 @@ pub enum ResourceContents {
         mime_type: String,
     },
 }
+
+// ===========================================================================
+/// RESOURCE SUBSCRIPTION SUPPORT
+// ===========================================================================
+
+/// Subscribe to resource change notifications.
+#[derive(Debug, Deserialize)]
+pub struct SubscribeResourceParams {
+    /// URI of the resource to subscribe to.
+    pub uri: String,
+}
+
+/// Result of subscribing to a resource.
+#[derive(Debug, Serialize)]
+pub struct SubscribeResourceResult {
+    // MCP spec doesn't define any result fields for this method
+    #[serde(skip_serializing)]
+    _empty: (),
+}
+
+impl Default for SubscribeResourceResult {
+    fn default() -> Self {
+        Self { _empty: () }
+    }
+}
+
+/// Unsubscribe from resource change notifications.
+#[derive(Debug, Deserialize)]
+pub struct UnsubscribeResourceParams {
+    /// URI of the resource to unsubscribe from.
+    pub uri: String,
+}
+
+/// Result of unsubscribing from a resource.
+#[derive(Debug, Serialize)]
+pub struct UnsubscribeResourceResult {
+    // MCP spec doesn't define any result fields for this method
+    #[serde(skip_serializing)]
+    _empty: (),
+}
+
+impl Default for UnsubscribeResourceResult {
+    fn default() -> Self {
+        Self { _empty: () }
+    }
+}
+
+/// Resource list changed notification.
+pub struct ResourcesListChangedNotification;
+
+impl ResourcesListChangedNotification {
+    pub const METHOD_NAME: &'static str = "resources/listChanged";
+
+    pub fn new() -> Self {
+        Self
+    }
+
+    /// Convert to JSON-RPC notification format.
+    pub fn to_jsonrpc(&self) -> serde_json::Value {
+        json!({
+            "jsonrpc": "2.0",
+            "method": Self::METHOD_NAME,
+        })
+    }
+}
+
+/// Resource subscription info.
+#[derive(Debug, Clone)]
+pub struct SubscriptionInfo {
+    /// URI being subscribed to.
+    pub uri: String,
+}
+
+impl From<&str> for SubscriptionInfo {
+    fn from(uri: &str) -> Self {
+        Self { uri: uri.to_string() }
+    }
+}
+
+/// Resource subscription management trait.
+pub trait ResourceManager {
+    /// Subscribe to a resource URI. Returns true if newly subscribed.
+    fn subscribe(&self, uri: &str) -> bool;
+
+    /// Unsubscribe from a resource URI. Returns true if was subscribed.
+    fn unsubscribe(&self, uri: &str) -> bool;
+
+    /// Check if a resource is currently subscribed.
+    fn is_subscribed(&self, uri: &str) -> bool;
+
+    /// Get list of all subscribed URIs.
+    fn get_subscriptions(&self) -> Vec<String>;
+}
+
+/// In-memory subscription manager for testing and simple use cases.
+pub struct MemorySubscriptionManager {
+    subscriptions: std::sync::Mutex<std::collections::HashSet<String>>,
+}
+
+impl MemorySubscriptionManager {
+    pub fn new() -> Self {
+        Self {
+            subscriptions: std::sync::Mutex::new(std::collections::HashSet::new()),
+        }
+    }
+}
+
+impl Default for MemorySubscriptionManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ResourceManager for MemorySubscriptionManager {
+    fn subscribe(&self, uri: &str) -> bool {
+        self.subscriptions
+            .lock()
+            .unwrap()
+            .insert(uri.to_string())
+    }
+
+    fn unsubscribe(&self, uri: &str) -> bool {
+        self.subscriptions.lock().unwrap().remove(uri)
+    }
+
+    fn is_subscribed(&self, uri: &str) -> bool {
+        self.subscriptions.lock().unwrap().contains(uri)
+    }
+
+    fn get_subscriptions(&self) -> Vec<String> {
+        self.subscriptions.lock().unwrap().clone().into_iter().collect()
+    }
+}
+
+
 
 impl ResourceContents {
     pub fn text(uri: &str, text: &str) -> Self {
