@@ -293,16 +293,12 @@ impl Content {
 
 /// List tools request parameters.
 #[derive(Debug, Deserialize)]
+#[derive(Default)]
 pub struct ListToolsParams {
     #[serde(default)]
     pub tool_names: Option<Vec<String>>,
 }
 
-impl Default for ListToolsParams {
-    fn default() -> Self {
-        Self { tool_names: None }
-    }
-}
 
 /// Tool list result.
 #[derive(Debug, Serialize)]

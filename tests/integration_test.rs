@@ -816,7 +816,7 @@ fn test_tools_call_with_directory() {
         .spawn()
         .expect("Failed to spawn mcp-cli");
 
-    let requests = vec![
+    let requests = [
         ("initialize", Some(&init_params)),
         ("tools/call", Some(&call_params)),
     ];
@@ -901,7 +901,7 @@ fn test_tools_call_not_found() {
         .spawn()
         .expect("Failed to spawn mcp-cli");
 
-    let requests = vec![
+    let requests = [
         ("initialize", Some(&init_params)),
         ("tools/call", Some(&call_params)),
     ];
