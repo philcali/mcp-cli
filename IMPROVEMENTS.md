@@ -46,12 +46,34 @@ Currently prompts are reloaded on every request when cache is empty.
 - Support cache refresh via `prompts/listChanged` notification
 
 ### 5. Resource Subscriptions
-**Pending**: Implement `resources/subscribe` method
+**Status**: ✅ Completed
 
-MCP spec includes:
-- `resources/subscribe` - Subscribe to resource change notifications
-- `resources/unsubscribe` - Unsubscribe from changes
-- `resources/listChanged` - Notification when list changes
+Implemented full subscription support for MCP resources.
+
+**What was done:**
+- Added protocol types: `SubscribeResourceParams`, `UnsubscribeResourceParams`
+- Implemented `MemorySubscriptionManager` with `ResourceManager` trait
+- Server handlers:
+  - `resources/subscribe` - Subscribe to a resource URI (validates existence)
+  - `resources/unsubscribe` - Unsubscribe from a resource URI
+- Proper error handling for non-existent resources
+- Clean separation between subscription tracking and resource access
+
+**MCP spec methods implemented:**
+- ✅ `resources/subscribe` - Subscribe to resource change notifications
+- ✅ `resources/unsubscribe` - Unsubscribe from changes
+- ⏳ `resources/listChanged` - Notification when list changes (not yet needed)
+
+**Test coverage:**
+Added 5 comprehensive integration tests:
+- `test_resources_subscribe_valid_resource` – Successful subscription
+- `test_resources_subscribe_nonexistent_resource` – Error on missing resource
+- `test_resources_unsubscribe_valid_resource` – Unsubscribe flow
+- `test_resources_unsubscribe_nonexistent_resource` – Error handling
+- `test_resources_subscribe_and_read` – Combined workflow (subscribe then read)
+
+**Notes:**
+The subscription manager is currently a simple in-memory store. For more complex use cases, this could be extended to support file watching or persistent subscriptions.
 
 ### 6. Tool Execution Improvements
 **Pending**: Enhance tool execution capabilities

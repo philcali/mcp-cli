@@ -948,3 +948,222 @@ fn test_tools_call_not_found() {
         "Expected error for non-existent tool"
     );
 }
+
+// ===========================================================================
+/// RESOURCE SUBSCRIPTION TESTS
+// ===========================================================================
+
+#[test]
+fn test_resources_subscribe_before_initialize() {
+    let subscribe_params = serde_json::json!({
+        "uri": "file:///test/resource.txt"
+    });
+
+    let response = run_request("resources/subscribe", Some(&subscribe_params), 1);
+
+    assert!(
+        response.get("error").is_some(),
+        "Expected error before initialize"
+    );
+}
+
+#[test]
+fn test_resources_subscribe_valid_resource() {
+    let temp_dir = setup_test_resources();
+
+    // Initialize first
+    let init_params = serde_json::json!({
+        "protocolVersion": "2024-11-05",
+        "capabilities": {},
+        "clientInfo": {
+            "name": "test-client",
+            "version": "1.0"
+        }
+    });
+
+    let subscribe_params = serde_json::json!({
+        "uri": format!("file://{}/hello.txt", temp_dir.path().display())
+    });
+
+    let results = run_request_sequence_with_resources(
+        temp_dir.path().to_path_buf(),
+        vec![
+            ("initialize", Some(&init_params)),
+            ("resources/subscribe", Some(&subscribe_params)),
+        ],
+    );
+
+    assert_eq!(results.len(), 2);
+    assert!(
+        results[0].get("result").is_some(),
+        "Expected successful initialize"
+    );
+    assert!(
+        results[1].get("result").is_some(),
+        "Expected successful subscribe, got error: {:?}",
+        results[1].get("error")
+    );
+}
+
+#[test]
+fn test_resources_subscribe_nonexistent_resource() {
+    let init_params = serde_json::json!({
+        "protocolVersion": "2024-11-05",
+        "capabilities": {},
+        "clientInfo": {
+            "name": "test-client",
+            "version": "1.0"
+        }
+    });
+
+    let subscribe_params = serde_json::json!({
+        "uri": "file:///nonexistent/resource.txt"
+    });
+
+    let results = run_request_sequence(
+        None,
+        None,
+        vec![
+            ("initialize", Some(&init_params)),
+            ("resources/subscribe", Some(&subscribe_params)),
+        ],
+    );
+
+    assert_eq!(results.len(), 2);
+    assert!(
+        results[1].get("error").is_some(),
+        "Expected error for non-existent resource"
+    );
+}
+
+#[test]
+fn test_resources_unsubscribe_valid_resource() {
+    let temp_dir = setup_test_resources();
+
+    // Initialize, subscribe, then unsubscribe in sequence
+    let init_params = serde_json::json!({
+        "protocolVersion": "2024-11-05",
+        "capabilities": {},
+        "clientInfo": {
+            "name": "test-client",
+            "version": "1.0"
+        }
+    });
+
+    let subscribe_params = serde_json::json!({
+        "uri": format!("file://{}/hello.txt", temp_dir.path().display())
+    });
+
+    let unsubscribe_params = serde_json::json!({
+        "uri": format!("file://{}/hello.txt", temp_dir.path().display())
+    });
+
+    let results = run_request_sequence_with_resources(
+        temp_dir.path().to_path_buf(),
+        vec![
+            ("initialize", Some(&init_params)),
+            ("resources/subscribe", Some(&subscribe_params)),
+            ("resources/unsubscribe", Some(&unsubscribe_params)),
+        ],
+    );
+
+    assert_eq!(results.len(), 3);
+    assert!(
+        results[0].get("result").is_some(),
+        "Expected successful initialize"
+    );
+    assert!(
+        results[1].get("result").is_some(),
+        "Expected successful subscribe, got error: {:?}",
+        results[1].get("error")
+    );
+    assert!(
+        results[2].get("result").is_some(),
+        "Expected successful unsubscribe, got error: {:?}",
+        results[2].get("error")
+    );
+}
+
+#[test]
+fn test_resources_unsubscribe_nonexistent_resource() {
+    let init_params = serde_json::json!({
+        "protocolVersion": "2024-11-05",
+        "capabilities": {},
+        "clientInfo": {
+            "name": "test-client",
+            "version": "1.0"
+        }
+    });
+
+    let unsubscribe_params = serde_json::json!({
+        "uri": "file:///nonexistent/resource.txt"
+    });
+
+    let results = run_request_sequence(
+        None,
+        None,
+        vec![
+            ("initialize", Some(&init_params)),
+            ("resources/unsubscribe", Some(&unsubscribe_params)),
+        ],
+    );
+
+    assert_eq!(results.len(), 2);
+    assert!(
+        results[1].get("error").is_some(),
+        "Expected error for non-existent resource"
+    );
+}
+
+#[test]
+fn test_resources_subscribe_and_read() {
+    let temp_dir = setup_test_resources();
+
+    // Initialize, subscribe, then read in sequence
+    let init_params = serde_json::json!({
+        "protocolVersion": "2024-11-05",
+        "capabilities": {},
+        "clientInfo": {
+            "name": "test-client",
+            "version": "1.0"
+        }
+    });
+
+    let subscribe_params = serde_json::json!({
+        "uri": format!("file://{}/hello.txt", temp_dir.path().display())
+    });
+
+    let read_params = serde_json::json!({
+        "uri": format!("file://{}/hello.txt", temp_dir.path().display())
+    });
+
+    let results = run_request_sequence_with_resources(
+        temp_dir.path().to_path_buf(),
+        vec![
+            ("initialize", Some(&init_params)),
+            ("resources/subscribe", Some(&subscribe_params)),
+            ("resources/read", Some(&read_params)),
+        ],
+    );
+
+    assert_eq!(results.len(), 3);
+    assert!(
+        results[0].get("result").is_some(),
+        "Expected successful initialize"
+    );
+    assert!(
+        results[1].get("result").is_some(),
+        "Expected successful subscribe, got error: {:?}",
+        results[1].get("error")
+    );
+
+    let result = &results[2]["result"];
+    assert!(
+        result.get("contents").is_some(),
+        "Expected contents in read result"
+    );
+
+    let contents = result["contents"].as_array().unwrap();
+    assert_eq!(contents.len(), 1);
+    assert_eq!(contents[0]["text"], "Hello, World!");
+}

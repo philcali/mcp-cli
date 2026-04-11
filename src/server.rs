@@ -45,6 +45,8 @@ pub struct McpServer {
     cached_prompts: Mutex<HashMap<String, PromptEntry>>,
     /// Client-provided root directories for file access
     roots: Mutex<Vec<Root>>,
+    /// Resource subscriptions manager
+    subscription_manager: std::sync::Arc<dyn crate::protocol::ResourceManager + Send + Sync>,
 }
 
 /// Definition of a discoverable tool with auth config.
@@ -156,6 +158,10 @@ impl Default for McpServer {
 impl McpServer {
     /// Create a new MCP server with the given name and version.
     pub fn new(name: &str, version: &str) -> Self {
+        let subscription_manager: std::sync::Arc<
+            dyn crate::protocol::ResourceManager + Send + Sync,
+        > = std::sync::Arc::new(crate::protocol::MemorySubscriptionManager::new());
+
         Self {
             name: name.to_string(),
             version: version.to_string(),
@@ -167,6 +173,7 @@ impl McpServer {
             prompts_dir: None,
             cached_prompts: Mutex::new(HashMap::new()),
             roots: Mutex::new(Vec::new()),
+            subscription_manager,
         }
     }
 
@@ -579,6 +586,8 @@ impl McpServer {
         match method {
             "initialize" => self.handle_initialize(params).await,
             "resources/list" => self.handle_resources_list().await,
+            "resources/subscribe" => self.handle_resources_subscribe(params).await,
+            "resources/unsubscribe" => self.handle_resources_unsubscribe(params).await,
             _ if !initialized => Err(anyhow::anyhow!("Server not initialized")),
             "initialized" => Ok(json!({})),
             "ping" => Ok(json!({})),
@@ -960,6 +969,80 @@ impl McpServer {
         } else {
             Err(anyhow::anyhow!("Resource '{}' is not available", uri_value))
         }
+    }
+
+    /// Handle resources/subscribe request.
+    async fn handle_resources_subscribe(
+        &self,
+        params: &serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let subscribe_params: crate::protocol::SubscribeResourceParams =
+            serde_json::from_value(params.clone())
+                .context("Failed to parse resources/subscribe parameters")?;
+
+        info!("Subscribing to resource: {}", subscribe_params.uri);
+
+        // Check if resource exists
+        let mut cached = self.cached_resources.lock().unwrap();
+        if cached.is_empty() {
+            *cached = self.load_resources()?;
+        }
+
+        if !cached.iter().any(|r| r.uri == subscribe_params.uri) {
+            return Err(anyhow::anyhow!(
+                "Resource '{}' does not exist",
+                subscribe_params.uri
+            ));
+        }
+
+        // Subscribe to the resource
+        let was_new = self.subscription_manager.subscribe(&subscribe_params.uri);
+
+        if was_new {
+            info!("Successfully subscribed to: {}", subscribe_params.uri);
+        } else {
+            debug!("Already subscribed to: {}", subscribe_params.uri);
+        }
+
+        Ok(json!({}))
+    }
+
+    /// Handle resources/unsubscribe request.
+    async fn handle_resources_unsubscribe(
+        &self,
+        params: &serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let unsubscribe_params: crate::protocol::UnsubscribeResourceParams =
+            serde_json::from_value(params.clone())
+                .context("Failed to parse resources/unsubscribe parameters")?;
+
+        info!("Unsubscribing from resource: {}", unsubscribe_params.uri);
+
+        // Check if resource exists first
+        let mut cached = self.cached_resources.lock().unwrap();
+        if cached.is_empty() {
+            *cached = self.load_resources()?;
+        }
+
+        if !cached.iter().any(|r| r.uri == unsubscribe_params.uri) {
+            return Err(anyhow::anyhow!(
+                "Resource '{}' does not exist",
+                unsubscribe_params.uri
+            ));
+        }
+
+        // Unsubscribe from the resource
+        let was_subscribed = self
+            .subscription_manager
+            .unsubscribe(&unsubscribe_params.uri);
+
+        if !was_subscribed {
+            debug!("Not subscribed to: {}", unsubscribe_params.uri);
+        } else {
+            info!("Successfully unsubscribed from: {}", unsubscribe_params.uri);
+        }
+
+        Ok(json!({}))
     }
 }
 
