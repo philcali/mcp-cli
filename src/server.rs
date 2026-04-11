@@ -158,8 +158,9 @@ impl Default for McpServer {
 impl McpServer {
     /// Create a new MCP server with the given name and version.
     pub fn new(name: &str, version: &str) -> Self {
-        let subscription_manager: std::sync::Arc<dyn crate::protocol::ResourceManager + Send + Sync> =
-            std::sync::Arc::new(crate::protocol::MemorySubscriptionManager::new());
+        let subscription_manager: std::sync::Arc<
+            dyn crate::protocol::ResourceManager + Send + Sync,
+        > = std::sync::Arc::new(crate::protocol::MemorySubscriptionManager::new());
 
         Self {
             name: name.to_string(),

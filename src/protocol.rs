@@ -414,7 +414,7 @@ pub enum ResourceContents {
 }
 
 // ===========================================================================
-/// RESOURCE SUBSCRIPTION SUPPORT
+// RESOURCE SUBSCRIPTION SUPPORT
 // ===========================================================================
 
 /// Subscribe to resource change notifications.
@@ -472,7 +472,9 @@ pub struct SubscriptionInfo {
 
 impl From<&str> for SubscriptionInfo {
     fn from(uri: &str) -> Self {
-        Self { uri: uri.to_string() }
+        Self {
+            uri: uri.to_string(),
+        }
     }
 }
 
@@ -512,10 +514,7 @@ impl Default for MemorySubscriptionManager {
 
 impl ResourceManager for MemorySubscriptionManager {
     fn subscribe(&self, uri: &str) -> bool {
-        self.subscriptions
-            .lock()
-            .unwrap()
-            .insert(uri.to_string())
+        self.subscriptions.lock().unwrap().insert(uri.to_string())
     }
 
     fn unsubscribe(&self, uri: &str) -> bool {
@@ -527,11 +526,14 @@ impl ResourceManager for MemorySubscriptionManager {
     }
 
     fn get_subscriptions(&self) -> Vec<String> {
-        self.subscriptions.lock().unwrap().clone().into_iter().collect()
+        self.subscriptions
+            .lock()
+            .unwrap()
+            .clone()
+            .into_iter()
+            .collect()
     }
 }
-
-
 
 impl ResourceContents {
     pub fn text(uri: &str, text: &str) -> Self {
