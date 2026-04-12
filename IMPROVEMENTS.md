@@ -36,14 +36,43 @@ MCP supports:
 - Result streaming via SSE or similar mechanisms
 
 ### 4. Prompt Caching/Invalidation  
-**Pending**: Improve prompt caching with proper invalidation
+**Status**: ✅ Completed
 
-Currently prompts are reloaded on every request when cache is empty.
+Implemented comprehensive prompt caching with TTL and file watching:
 
-**Suggestions:**
-- Add TTL-based cache expiration
-- Watch file changes and invalidate cache on modification
-- Support cache refresh via `prompts/listChanged` notification
+**What was done:**
+- **TTL-based cache expiration**: Prompts cached for configurable duration (default 5 minutes)
+  - Each prompt entry tracks `loaded_at` timestamp
+  - Cache automatically refreshed when prompts accessed after TTL expires
+  - Configurable via `PromptCacheConfig::ttl_secs`
+  
+- **File system watching**: Background watcher detects prompt file changes
+  - Uses `notify` crate for cross-platform file monitoring
+  - Automatically invalidates cache on file modify/create/remove events
+  - Can be disabled via `watch_for_changes` config flag
+  
+- **Manual cache invalidation**: `invalidate_prompt_cache()` method available
+  - Forces reload of all prompts on next access
+  - Useful for triggering immediate refresh after bulk operations
+
+**Configuration:**
+```rust
+let server = McpServer::new("server", "1.0.0")
+    .with_prompt_cache_config(PromptCacheConfig {
+        ttl_secs: 300,           // Cache duration in seconds (default: 300)
+        watch_for_changes: true, // Enable file watching (default: true)
+    });
+
+// Start background watcher
+let _watcher = server.start_prompt_watcher()?;
+
+// Manual invalidation
+server.invalidate_prompt_cache()?;
+```
+
+**Test coverage:**
+- `test_prompt_cache_ttl` – Verifies TTL-based expiration works correctly
+- `test_prompt_cache_invalidation` – Tests manual cache clearing
 
 ### 5. Resource Subscriptions
 **Status**: ✅ Completed
