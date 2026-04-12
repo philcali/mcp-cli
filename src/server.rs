@@ -508,9 +508,10 @@ impl McpServer {
 
         // Check if prompt exists and is not expired
         if let Some(entry) = cached.get(name)
-            && !self.is_prompt_expired(entry) {
-                return Ok(Some(entry.clone()));
-            }
+            && !self.is_prompt_expired(entry)
+        {
+            return Ok(Some(entry.clone()));
+        }
 
         // Reload prompts (expired or missing)
         drop(cached);
