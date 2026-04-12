@@ -4,11 +4,12 @@
 
 use anyhow::Result;
 use clap::Parser;
-use tracing::{Level, info};
+use tracing::{Level, info, warn};
 use tracing_subscriber::fmt::format::FmtSpan;
 
 pub mod protocol;
 pub mod server;
+pub mod watcher;
 
 /// Model Context Protocol CLI server
 #[derive(Parser, Debug)]
@@ -42,23 +43,49 @@ async fn main() -> Result<()> {
         .with_tools()
         .with_resources(false);
 
-    if let Some(tools_dir) = cli.tools_dir {
-        info!("Using tools directory: {:?}", tools_dir);
-        builder = builder.with_tools_dir(tools_dir);
+    let tools_dir = cli.tools_dir.clone();
+    let resources_dir = cli.resources_dir.clone();
+    let prompts_dir = cli.prompts_dir.clone();
+
+    if let Some(ref td) = tools_dir {
+        info!("Using tools directory: {:?}", td);
+        builder = builder.with_tools_dir(td.clone());
     }
 
-    if let Some(resources_dir) = cli.resources_dir {
-        info!("Using resources directory: {:?}", resources_dir);
-        builder = builder.with_resources_dir(resources_dir);
+    if let Some(ref rd) = resources_dir {
+        info!("Using resources directory: {:?}", rd);
+        builder = builder.with_resources_dir(rd.clone());
     }
 
-    if let Some(prompts_dir) = cli.prompts_dir {
-        info!("Using prompts directory: {:?}", prompts_dir);
+    if let Some(ref pd) = prompts_dir {
+        info!("Using prompts directory: {:?}", pd);
         builder = builder.with_prompts();
-        builder = builder.with_prompts_dir(prompts_dir);
+        builder = builder.with_prompts_dir(pd.clone());
     }
 
     let mut srv = builder.build();
+
+    // Start watchers if directories are configured
+    if tools_dir.is_some() {
+        match srv.start_tool_watcher() {
+            Ok(handle) => {
+                info!("Started tool watcher");
+                std::mem::forget(handle); // Keep handle alive for lifetime of process
+            }
+            Err(e) => warn!("Failed to start tool watcher: {}", e),
+        }
+    }
+
+    if prompts_dir.is_some() {
+        match srv.start_prompt_watcher() {
+            Ok(handle) => {
+                info!("Started prompt watcher");
+                std::mem::forget(handle); // Keep handle alive for lifetime of process
+            }
+            Err(e) => warn!("Failed to start prompt watcher: {}", e),
+        }
+    }
+
     info!("MCP server starting...");
     srv.run().await?;
 

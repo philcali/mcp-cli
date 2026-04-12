@@ -16,5 +16,6 @@
 
 pub mod protocol;
 pub mod server;
+pub mod watcher;
 
 // Note: tools module uses serde_json but is not exposed here

@@ -1,11 +1,12 @@
 //! MCP server implementation with stdio transport.
 
 use crate::protocol::*;
+use crate::watcher::FileSystemWatcher;
 use anyhow::{Context, Result};
 use serde_json::json;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tracing::{debug, error, info, warn};
 
@@ -51,7 +52,7 @@ pub struct McpServer {
     /// Path to tools directory (optional)
     tools_dir: Option<PathBuf>,
     /// Cached tool list from discovered scripts
-    cached_tools: Mutex<HashMap<String, ToolDefinition>>,
+    cached_tools: Arc<Mutex<HashMap<String, ToolDefinition>>>,
     /// Path to resources directory (optional)
     resources_dir: Option<PathBuf>,
     /// Cached resource list
@@ -59,7 +60,7 @@ pub struct McpServer {
     /// Path to prompts directory (optional)
     prompts_dir: Option<PathBuf>,
     /// Cached prompt list with TTL metadata
-    cached_prompts: Mutex<HashMap<String, PromptEntry>>,
+    cached_prompts: Arc<Mutex<HashMap<String, PromptEntry>>>,
     /// Prompt cache configuration
     prompt_cache_config: PromptCacheConfig,
     /// Client-provided root directories for file access
@@ -186,12 +187,12 @@ impl McpServer {
             version: version.to_string(),
             capabilities: ServerCapabilities::new(),
             tools_dir: None,
-            cached_tools: Mutex::new(HashMap::new()),
+            cached_tools: Arc::new(Mutex::new(HashMap::new())),
             resources_dir: None,
             cached_resources: Mutex::new(Vec::new()),
             prompts_dir: None,
             prompt_cache_config: PromptCacheConfig::default(),
-            cached_prompts: Mutex::new(HashMap::new()),
+            cached_prompts: Arc::new(Mutex::new(HashMap::new())),
             roots: Mutex::new(Vec::new()),
             subscription_manager,
         }
@@ -267,6 +268,28 @@ impl McpServer {
     pub fn enable_tools_dir(mut self, path: PathBuf) -> Self {
         self.tools_dir = Some(path);
         self
+    }
+
+    /// Start watching tools directory for file changes.
+    pub fn start_tool_watcher(&self) -> Result<std::sync::Arc<tokio::task::JoinHandle<()>>> {
+        let dir = match &self.tools_dir {
+            Some(p) => p.clone(),
+            None => return Err(anyhow::anyhow!("No tools directory configured")),
+        };
+
+        let cached_tools_mutex = self.cached_tools.clone();
+
+        let handle = crate::watcher::ToolWatcher::start_watching(
+            dir,
+            crate::watcher::WatchConfig {
+                watch_for_changes: true,
+            },
+            Box::new(move || {
+                cached_tools_mutex.lock().unwrap().clear();
+            }),
+        )?;
+
+        Ok(handle)
     }
 
     /// Load tools from the tools directory.
@@ -530,7 +553,7 @@ impl McpServer {
 
     /// Start watching prompts directory for file changes.
     pub fn start_prompt_watcher(&self) -> Result<std::sync::Arc<tokio::task::JoinHandle<()>>> {
-        let _dir = match &self.prompts_dir {
+        let dir = match &self.prompts_dir {
             Some(p) => p.clone(),
             None => return Err(anyhow::anyhow!("No prompts directory configured")),
         };
@@ -540,71 +563,19 @@ impl McpServer {
             return Ok(std::sync::Arc::new(tokio::task::spawn(async {})));
         }
 
-        let cached_prompts = std::sync::Mutex::new(self.cached_prompts.lock().unwrap().clone());
-        let prompts_dir = self.prompts_dir.clone();
-        let cache_config = self.prompt_cache_config.clone();
+        let cached_prompts_mutex = self.cached_prompts.clone();
 
-        let handle = tokio::task::spawn(async move {
-            Self::watch_prompts_directory(cached_prompts, prompts_dir, cache_config).await;
-        });
+        let handle = crate::watcher::PromptWatcher::start_watching(
+            dir,
+            crate::watcher::WatchConfig {
+                watch_for_changes: true,
+            },
+            Box::new(move || {
+                cached_prompts_mutex.lock().unwrap().clear();
+            }),
+        )?;
 
-        Ok(std::sync::Arc::new(handle))
-    }
-
-    /// Background task to watch prompts directory for changes.
-    async fn watch_prompts_directory(
-        cached_prompts: Mutex<HashMap<String, PromptEntry>>,
-        prompts_dir: Option<PathBuf>,
-        cache_config: PromptCacheConfig,
-    ) {
-        use notify::{Event, RecursiveMode, Watcher};
-
-        let dir = match &prompts_dir {
-            Some(p) => p.clone(),
-            None => return,
-        };
-
-        if !cache_config.watch_for_changes {
-            warn!("Prompt file watching is disabled in configuration");
-            return;
-        }
-
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<notify::Result<Event>>(100);
-
-        // Use polling watcher for better cross-platform compatibility
-        let mut watcher = match notify::recommended_watcher(move |res: notify::Result<Event>| {
-            let _ = tx.blocking_send(res);
-        }) {
-            Ok(w) => w,
-            Err(e) => {
-                error!("Failed to create prompt file watcher: {}", e);
-                return;
-            }
-        };
-
-        if let Err(e) = watcher.watch(&dir, RecursiveMode::Recursive) {
-            error!("Failed to watch prompts directory {:?}: {}", dir, e);
-            return;
-        }
-
-        info!("Started watching prompts directory: {:?}", dir);
-
-        while let Some(res) = rx.recv().await {
-            match res {
-                Ok(event) => {
-                    if event.kind.is_modify() || event.kind.is_create() || event.kind.is_remove() {
-                        for path in &event.paths {
-                            info!("Prompt file change detected: {:?}", path);
-                        }
-                        // Invalidate cache on any file change
-                        cached_prompts.lock().unwrap().clear();
-                    }
-                }
-                Err(e) => {
-                    error!("Watch error: {}", e);
-                }
-            }
-        }
+        Ok(handle)
     }
 
     /// Run the server loop on stdio transport.
