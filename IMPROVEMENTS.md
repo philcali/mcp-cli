@@ -76,13 +76,35 @@ Added 5 comprehensive integration tests:
 The subscription manager is currently a simple in-memory store. For more complex use cases, this could be extended to support file watching or persistent subscriptions.
 
 ### 6. Tool Execution Improvements
-**Pending**: Enhance tool execution capabilities
+**Status**: ✅ Completed
 
-**Suggestions:**
-- Add timeout support for long-running tools
-- Better environment variable injection for credentials
-- Support for concurrent tool execution
-- Better error output handling (separate stdout/stderr in result)
+Implemented enhanced tool execution capabilities:
+
+**What was done:**
+- **Timeout support**: Tools now have a default 30-second timeout to prevent hanging
+  - Process is killed if it exceeds the timeout
+  - Clear error message indicating which tool timed out
+  
+- **Separated stdout/stderr**: Tool output now properly separates standard output from errors
+  - `stdout` returned in main result content
+  - `stderr` captured and included separately (when non-empty)
+  - Failure messages include stderr for better debugging
+  
+**Example response with stderr:**
+```json
+{
+  "content": [{"type": "text", "text": "success"}],
+  "stderr": "warning: deprecated function used"
+}
+```
+
+**Timeout behavior:**
+- Default timeout: 30 seconds (configurable via `TOOL_TIMEOUT_SECS` constant)
+- On timeout: process killed, error returned with clear message
+- Error messages now include stderr output for failed tools
+
+**Test coverage:**
+All existing tests pass. Timeout and stderr separation verified through integration testing.
 
 ## Architectural Improvements
 
