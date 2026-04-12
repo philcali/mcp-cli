@@ -218,11 +218,6 @@ impl McpServer {
             return Err(anyhow::anyhow!("Unsupported protocol version"));
         }
 
-        // Validate protocol version (simplified check)
-        if !init_params.protocol_version.starts_with("2024-") {
-            return Err(anyhow::anyhow!("Unsupported protocol version"));
-        }
-
         let result = InitResult {
             protocol_version: "2024-11-05".to_string(),
             capabilities: self.capabilities.clone(),
@@ -492,6 +487,11 @@ impl McpServer {
 
                     debug!("Received message: {}", line);
 
+                    let is_initialize = serde_json::from_str::<serde_json::Value>(&line)
+                        .ok()
+                        .map(|v| v.get("method").and_then(|m| m.as_str()) == Some("initialize"))
+                        .unwrap_or(false);
+
                     // Parse and respond to the request
                     match self.handle_request(&line, initialized).await {
                         Ok(response) => {
@@ -501,7 +501,7 @@ impl McpServer {
                             let _ = tokio::io::stdout().flush().await;
 
                             // After successful initialize, mark as initialized
-                            if !initialized && response.contains("capabilities") {
+                            if !initialized && is_initialize {
                                 initialized = true;
                             }
                         }
@@ -519,11 +519,6 @@ impl McpServer {
                                 )
                                 .await;
                         }
-                    }
-
-                    // Update initialized state based on response
-                    if !initialized && self.capabilities.tools == Some(true) {
-                        initialized = true;
                     }
                 }
                 Ok(None) => {
@@ -869,8 +864,8 @@ impl McpServer {
             .spawn()
             .context("Failed to spawn tool script")?;
 
-        // Write input to stdin and capture output/error
-        let result = {
+        // Write input to stdin and capture output/error separately
+        let (stdout_result, stderr_output) = {
             let mut stdin = child.stdin.take().context("Failed to open stdin")?;
             use tokio::io::AsyncWriteExt;
             stdin.write_all(input.to_string().as_bytes()).await?;
@@ -895,40 +890,77 @@ impl McpServer {
                 }
             );
 
-            match (stdout_res, stderr_res) {
-                (Ok(out), Ok(err)) => {
-                    if !err.is_empty() {
-                        debug!("Tool stderr: {}", err);
-                    }
-                    out
-                }
-                (Err(e), _) | (_, Err(e)) => {
-                    return Err(anyhow::anyhow!("Failed to read output: {}", e));
-                }
-            }
+            (stdout_res?, stderr_res?)
         };
 
-        // Wait for process to complete
-        let status = child.wait().await.context("Failed to wait on tool")?;
+        // Wait for process to complete with timeout
+        const TOOL_TIMEOUT_SECS: u64 = 30;
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(TOOL_TIMEOUT_SECS),
+            child.wait(),
+        )
+        .await
+        {
+            Ok(Ok(status)) => {
+                debug!(
+                    "Tool '{}' exited with status: {} (stdout: {}, stderr: {})",
+                    call_params.name,
+                    status,
+                    stdout_result.len(),
+                    stderr_output.len()
+                );
 
-        debug!("Tool '{}' exited with status: {}", call_params.name, status);
-
-        if !status.success() {
-            return Err(anyhow::anyhow!(
-                "Tool '{}' failed with exit code: {:?}",
-                call_params.name,
-                status.code()
-            ));
+                if !status.success() {
+                    return Err(anyhow::anyhow!(
+                        "Tool '{}' failed with exit code {:?}\nstderr: {}",
+                        call_params.name,
+                        status.code(),
+                        stderr_output.trim()
+                    ));
+                }
+            }
+            Ok(Err(_)) => {
+                // Timeout - kill the process
+                let _ = child.kill().await;
+                return Err(anyhow::anyhow!(
+                    "Tool '{}' timed out after {} seconds",
+                    call_params.name,
+                    TOOL_TIMEOUT_SECS
+                ));
+            }
+            Err(_) => {
+                // Wait error - kill the process
+                let _ = child.kill().await;
+                return Err(anyhow::anyhow!(
+                    "Failed to wait for tool '{}' to complete",
+                    call_params.name
+                ));
+            }
         }
 
-        Ok(json!({
-            "content": [
-                {
-                    "type": "text",
-                    "text": result.trim()
-                }
-            ]
-        }))
+        // Return stdout as result and include stderr separately if present
+        let response = if !stderr_output.is_empty() {
+            json!({
+                "content": [
+                    {
+                        "type": "text",
+                        "text": stdout_result.trim()
+                    }
+                ],
+                "stderr": stderr_output.trim()
+            })
+        } else {
+            json!({
+                "content": [
+                    {
+                        "type": "text",
+                        "text": stdout_result.trim()
+                    }
+                ]
+            })
+        };
+
+        Ok(response)
     }
 
     /// Handle resources/read request.
