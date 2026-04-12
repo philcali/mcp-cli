@@ -17,13 +17,30 @@ struct Root {
     _name: Option<String>,
 }
 
-/// Entry for a discovered prompt.
+/// Entry for a discovered prompt with cache metadata.
 #[derive(Debug, Clone)]
 struct PromptEntry {
     name: String,
     description: Option<String>,
     arguments: Option<Vec<crate::protocol::PromptArgument>>,
     file_path: PathBuf,
+    loaded_at: std::time::Instant,
+}
+
+/// Configuration for prompt caching.
+#[derive(Debug, Clone)]
+pub struct PromptCacheConfig {
+    pub ttl_secs: u64,
+    pub watch_for_changes: bool,
+}
+
+impl Default for PromptCacheConfig {
+    fn default() -> Self {
+        Self {
+            ttl_secs: 300, // 5 minutes default TTL
+            watch_for_changes: true,
+        }
+    }
 }
 
 /// Server state and configuration.
@@ -41,8 +58,10 @@ pub struct McpServer {
     cached_resources: Mutex<Vec<ResourceEntry>>,
     /// Path to prompts directory (optional)
     prompts_dir: Option<PathBuf>,
-    /// Cached prompt list
+    /// Cached prompt list with TTL metadata
     cached_prompts: Mutex<HashMap<String, PromptEntry>>,
+    /// Prompt cache configuration
+    prompt_cache_config: PromptCacheConfig,
     /// Client-provided root directories for file access
     roots: Mutex<Vec<Root>>,
     /// Resource subscriptions manager
@@ -171,10 +190,17 @@ impl McpServer {
             resources_dir: None,
             cached_resources: Mutex::new(Vec::new()),
             prompts_dir: None,
+            prompt_cache_config: PromptCacheConfig::default(),
             cached_prompts: Mutex::new(HashMap::new()),
             roots: Mutex::new(Vec::new()),
             subscription_manager,
         }
+    }
+
+    /// Configure prompt caching behavior.
+    pub fn with_prompt_cache_config(mut self, config: PromptCacheConfig) -> Self {
+        self.prompt_cache_config = config;
+        self
     }
 
     /// Add a root directory provided by the client.
@@ -461,12 +487,124 @@ impl McpServer {
                     description: prompt_file.description,
                     arguments: prompt_file.arguments,
                     file_path: path,
+                    loaded_at: std::time::Instant::now(),
                 },
             );
         }
 
         info!("Loaded {} prompts", prompts.len());
         Ok(prompts)
+    }
+
+    /// Check if a prompt has expired based on TTL.
+    fn is_prompt_expired(&self, entry: &PromptEntry) -> bool {
+        let ttl = std::time::Duration::from_secs(self.prompt_cache_config.ttl_secs);
+        entry.loaded_at.elapsed() > ttl
+    }
+
+    /// Get a prompt from cache, reloading if expired or missing.
+    fn get_prompt(&self, name: &str) -> Result<Option<PromptEntry>> {
+        let cached = self.cached_prompts.lock().unwrap();
+
+        // Check if prompt exists and is not expired
+        if let Some(entry) = cached.get(name)
+            && !self.is_prompt_expired(entry)
+        {
+            return Ok(Some(entry.clone()));
+        }
+
+        // Reload prompts (expired or missing)
+        drop(cached);
+        let mut cached = self.cached_prompts.lock().unwrap();
+        *cached = self.load_prompts()?;
+
+        Ok(cached.get(name).cloned())
+    }
+
+    /// Invalidate the prompt cache, forcing reload on next access.
+    pub fn invalidate_prompt_cache(&self) -> Result<()> {
+        info!("Invalidating prompt cache");
+        self.cached_prompts.lock().unwrap().clear();
+        Ok(())
+    }
+
+    /// Start watching prompts directory for file changes.
+    pub fn start_prompt_watcher(&self) -> Result<std::sync::Arc<tokio::task::JoinHandle<()>>> {
+        let _dir = match &self.prompts_dir {
+            Some(p) => p.clone(),
+            None => return Err(anyhow::anyhow!("No prompts directory configured")),
+        };
+
+        if !self.prompt_cache_config.watch_for_changes {
+            warn!("Prompt file watching is disabled in configuration");
+            return Ok(std::sync::Arc::new(tokio::task::spawn(async {})));
+        }
+
+        let cached_prompts = std::sync::Mutex::new(self.cached_prompts.lock().unwrap().clone());
+        let prompts_dir = self.prompts_dir.clone();
+        let cache_config = self.prompt_cache_config.clone();
+
+        let handle = tokio::task::spawn(async move {
+            Self::watch_prompts_directory(cached_prompts, prompts_dir, cache_config).await;
+        });
+
+        Ok(std::sync::Arc::new(handle))
+    }
+
+    /// Background task to watch prompts directory for changes.
+    async fn watch_prompts_directory(
+        cached_prompts: Mutex<HashMap<String, PromptEntry>>,
+        prompts_dir: Option<PathBuf>,
+        cache_config: PromptCacheConfig,
+    ) {
+        use notify::{Event, RecursiveMode, Watcher};
+
+        let dir = match &prompts_dir {
+            Some(p) => p.clone(),
+            None => return,
+        };
+
+        if !cache_config.watch_for_changes {
+            warn!("Prompt file watching is disabled in configuration");
+            return;
+        }
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<notify::Result<Event>>(100);
+
+        // Use polling watcher for better cross-platform compatibility
+        let mut watcher = match notify::recommended_watcher(move |res: notify::Result<Event>| {
+            let _ = tx.blocking_send(res);
+        }) {
+            Ok(w) => w,
+            Err(e) => {
+                error!("Failed to create prompt file watcher: {}", e);
+                return;
+            }
+        };
+
+        if let Err(e) = watcher.watch(&dir, RecursiveMode::Recursive) {
+            error!("Failed to watch prompts directory {:?}: {}", dir, e);
+            return;
+        }
+
+        info!("Started watching prompts directory: {:?}", dir);
+
+        while let Some(res) = rx.recv().await {
+            match res {
+                Ok(event) => {
+                    if event.kind.is_modify() || event.kind.is_create() || event.kind.is_remove() {
+                        for path in &event.paths {
+                            info!("Prompt file change detected: {:?}", path);
+                        }
+                        // Invalidate cache on any file change
+                        cached_prompts.lock().unwrap().clear();
+                    }
+                }
+                Err(e) => {
+                    error!("Watch error: {}", e);
+                }
+            }
+        }
     }
 
     /// Run the server loop on stdio transport.
@@ -702,21 +840,10 @@ impl McpServer {
             serde_json::from_value(params.clone())
                 .context("Failed to parse prompt get parameters")?;
 
-        // Look up the prompt in cache or try to load it
-        let entry = {
-            let cached = self.cached_prompts.lock().unwrap();
-            if let Some(prompt) = cached.get(&get_params.name) {
-                prompt.clone()
-            } else {
-                drop(cached);
-                // Reload prompts and look again
-                let mut cached = self.cached_prompts.lock().unwrap();
-                *cached = self.load_prompts()?;
-                match cached.get(&get_params.name) {
-                    Some(prompt) => prompt.clone(),
-                    None => return Err(anyhow::anyhow!("Prompt '{}' not found", get_params.name)),
-                }
-            }
+        // Look up the prompt in cache with TTL check
+        let entry = match self.get_prompt(&get_params.name)? {
+            Some(entry) => entry,
+            None => return Err(anyhow::anyhow!("Prompt '{}' not found", get_params.name)),
         };
 
         // Validate required arguments if prompt has them
@@ -1175,5 +1302,89 @@ impl ServerBuilder {
 impl Default for ServerBuilder {
     fn default() -> Self {
         Self::new("mcp-cli", "0.1.0")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_prompt_cache_ttl() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create a sample prompt file
+        let prompt_path = temp_dir.path().join("test.prompt.json");
+        std::fs::write(
+            &prompt_path,
+            r#"{"name": "test", "description": "Test prompt", "messages": []}"#,
+        )
+        .unwrap();
+
+        let server = McpServer::new("test-server", "1.0.0")
+            .enable_prompts_dir(temp_dir.path().to_path_buf())
+            .with_prompt_cache_config(PromptCacheConfig {
+                ttl_secs: 1, // 1 second TTL for testing
+                watch_for_changes: false,
+            });
+
+        server.invalidate_prompt_cache().unwrap();
+
+        // Load a specific prompt (this triggers cache population via get_prompt)
+        let _entry = server.get_prompt("test").unwrap();
+
+        // Verify prompt is cached
+        {
+            let cached = server.cached_prompts.lock().unwrap();
+            assert!(cached.contains_key("test"));
+        }
+
+        // Wait for TTL to expire
+        std::thread::sleep(std::time::Duration::from_secs(2));
+
+        // Check that prompt is now expired (would reload on next access)
+        {
+            let cached = server.cached_prompts.lock().unwrap();
+            if let Some(entry) = cached.get("test") {
+                assert!(server.is_prompt_expired(entry));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_prompt_cache_invalidation() {
+        // Unused import removed
+
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create a sample prompt file
+        let prompt_path = temp_dir.path().join("test.prompt.json");
+        std::fs::write(
+            &prompt_path,
+            r#"{"name": "test", "description": "Test prompt", "messages": []}"#,
+        )
+        .unwrap();
+
+        let server = McpServer::new("test-server", "1.0.0")
+            .enable_prompts_dir(temp_dir.path().to_path_buf());
+
+        // Load prompts first time
+        let _result: serde_json::Value = server.handle_prompts_list().await.unwrap();
+
+        // Verify prompt is cached
+        {
+            let cached = server.cached_prompts.lock().unwrap();
+            assert!(cached.contains_key("test"));
+        }
+
+        // Manually invalidate cache
+        server.invalidate_prompt_cache().unwrap();
+
+        // Cache should be empty after invalidation
+        {
+            let cached = server.cached_prompts.lock().unwrap();
+            assert!(cached.is_empty());
+        }
     }
 }
