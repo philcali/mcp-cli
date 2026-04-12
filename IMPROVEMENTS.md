@@ -118,7 +118,7 @@ Implemented enhanced tool execution capabilities:
   - `stdout` returned in main result content
   - `stderr` captured and included separately (when non-empty)
   - Failure messages include stderr for better debugging
-  
+
 **Example response with stderr:**
 ```json
 {
@@ -134,6 +134,80 @@ Implemented enhanced tool execution capabilities:
 
 **Test coverage:**
 All existing tests pass. Timeout and stderr separation verified through integration testing.
+
+### 7. Unified File System Watcher
+**Status**: ✅ Completed
+
+Created unified file system watcher module that provides shared infrastructure for watching tools, prompts, and resources directories:
+
+**What was done:**
+- **New `src/watcher.rs` module**: Centralized file watching abstraction using `notify` crate
+  - `FileSystemWatcher` trait with consistent interface across all resource types
+  - `WatchConfig` configuration struct for enabling/disabling watchers
+  - Separate `PromptWatcher` and `ToolWatcher` implementations
+  
+- **Unified event handling**: Both tools and prompts now use the same watching infrastructure
+  - Automatic cache invalidation when files are modified/created/deleted
+  - Cross-platform support via `notify`'s recommended watcher
+  - Background async tasks for non-blocking file monitoring
+  
+- **Shared configuration**: Watchers can be enabled/disabled independently per directory type
+
+**Integration:**
+```rust
+// Start watching tools directory
+let tool_handle = server.start_tool_watcher()?;
+
+// Start watching prompts directory  
+let prompt_handle = server.start_prompt_watcher()?;
+```
+
+**Test coverage:**
+Watchers verified through integration testing. Cache invalidation triggers on file changes.
+
+### 8. Server Monolith Refactor & Modularization
+**Pending**: Break up server.rs into focused modules
+
+The current `server.rs` is a monolithic file (~1000 lines) mixing concerns:
+- Initialization logic intertwined with request routing
+- Tool/resource/prompt discovery in same file as handlers
+- No clear separation between protocol handling and business logic
+- Duplicate code patterns across handler methods
+- Routing logic scattered throughout
+
+**Proposed structure:**
+```
+src/
+├── server.rs          # Entry point, stdio transport loop
+├── routing.rs         # Request routing, method dispatch
+├── handlers/
+│   ├── init.rs        # Initialize/initialized handling
+│   ├── tools.rs       # Tool list/call operations
+│   ├── resources.rs   # Resource CRUD and subscriptions
+│   └── prompts.rs     # Prompt listing/retrieval
+├── discovery.rs       # Tool/resource/prompt file discovery
+├── auth/              # Authentication module
+│   ├── config.rs      # Auth configuration loading
+│   └── resolver.rs    # Credential resolution
+├── state.rs           # Shared server state management
+└── watcher.rs         # Unified file system watcher (NEW)
+```
+
+**Benefits:**
+- Easier to test individual components in isolation
+- Clearer ownership of features (tools team vs resources team)
+- Reduced merge conflicts when multiple people working
+- Better code navigation and discoverability
+- Can progressively refactor without breaking changes
+
+**Implementation approach:**
+1. Extract routing logic into dedicated module with clear method→handler mapping
+2. Create handler modules with consistent signatures (`async fn handle_XXX(&self, params) -> Result<Value>`)
+3. Move discovery logic to separate module with shared caching interface
+4. Introduce `ServerState` struct for clean state management (replacing scattered fields)
+5. Add integration tests after each extraction to ensure behavior preserved
+
+**Quick win first:** Extract routing (`route_request`) into its own file and add explicit method→handler documentation.
 
 ## Architectural Improvements
 
