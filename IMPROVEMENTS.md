@@ -108,23 +108,63 @@ All existing tests pass. Timeout and stderr separation verified through integrat
 
 ## Architectural Improvements
 
-### 7. Persistent Server Mode
-**Pending**: Option to keep server process alive
+### 7. Server Monolith Refactor & Modularization
+**Pending**: Break up server.rs into focused modules
 
-Currently the server is short-lived (one request per invocation). Consider adding:
+The current `server.rs` is a monolithic file (~1000 lines) mixing concerns:
+- Initialization logic intertwined with request routing
+- Tool/resource/prompt discovery in same file as handlers
+- No clear separation between protocol handling and business logic
+- Duplicate code patterns across handler methods
+- Routing logic scattered throughout
 
-**Options:**
-- Environment variable flag for persistent mode
-- HTTP/Unix socket transport option
-- Request queuing for better throughput
+**Proposed structure:**
+```
+src/
+├── server.rs          # Entry point, stdio transport loop
+├── routing.rs         # Request routing, method dispatch
+├── handlers/
+│   ├── init.rs        # Initialize/initialized handling
+│   ├── tools.rs       # Tool list/call operations
+│   ├── resources.rs   # Resource CRUD and subscriptions
+│   └── prompts.rs     # Prompt listing/retrieval
+├── discovery.rs       # Tool/resource/prompt file discovery
+├── auth/              # Authentication module
+│   ├── config.rs      # Auth configuration loading
+│   └── resolver.rs    # Credential resolution
+└── state.rs           # Shared server state management
+```
 
-### 8. Protocol Version Support
-**Pending**: Better protocol version handling
+**Benefits:**
+- Easier to test individual components in isolation
+- Clearer ownership of features (tools team vs resources team)
+- Reduced merge conflicts when multiple people working
+- Better code navigation and discoverability
+- Can progressively refactor without breaking changes
 
-Currently only accepts versions starting with "2024-". Could improve:
-- Support multiple MCP protocol versions
-- Graceful downgrade on version mismatch
-- Feature detection per protocol version
+**Implementation approach:**
+1. Extract routing logic into dedicated module with clear method→handler mapping
+2. Create handler modules with consistent signatures (`async fn handle_XXX(&self, params) -> Result<Value>`)
+3. Move discovery logic to separate module with shared caching interface
+4. Introduce `ServerState` struct for clean state management (replacing scattered fields)
+5. Add integration tests after each extraction to ensure behavior preserved
+
+**Quick win first:** Extract routing (`route_request`) into its own file and add explicit method→handler documentation.
+
+### 8. Protocol Version Support & Initialization Flow
+**Pending**: Better protocol version handling and initialization
+
+Currently only accepts versions starting with "2024-" (hardcoded check). The init flow has issues:
+- Duplicate protocol validation code (now fixed)
+- Fragile `initialized` flag based on response string matching
+- No proper negotiation of protocol capabilities
+- Client roots handling mixed with version checking
+
+**Proposed improvements:**
+- Version negotiation with clear error messages for unsupported versions
+- Separate initialization state from capabilities (use explicit `initialized: bool` field)
+- Capability-based feature detection instead of hardcoded checks
+- Proper lifecycle management: init → ready → handle requests
 
 ## Additional Features
 

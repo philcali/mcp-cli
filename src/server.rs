@@ -218,11 +218,6 @@ impl McpServer {
             return Err(anyhow::anyhow!("Unsupported protocol version"));
         }
 
-        // Validate protocol version (simplified check)
-        if !init_params.protocol_version.starts_with("2024-") {
-            return Err(anyhow::anyhow!("Unsupported protocol version"));
-        }
-
         let result = InitResult {
             protocol_version: "2024-11-05".to_string(),
             capabilities: self.capabilities.clone(),
@@ -492,6 +487,11 @@ impl McpServer {
 
                     debug!("Received message: {}", line);
 
+                    let is_initialize = serde_json::from_str::<serde_json::Value>(&line)
+                        .ok()
+                        .map(|v| v.get("method").and_then(|m| m.as_str()) == Some("initialize"))
+                        .unwrap_or(false);
+
                     // Parse and respond to the request
                     match self.handle_request(&line, initialized).await {
                         Ok(response) => {
@@ -501,7 +501,7 @@ impl McpServer {
                             let _ = tokio::io::stdout().flush().await;
 
                             // After successful initialize, mark as initialized
-                            if !initialized && response.contains("capabilities") {
+                            if !initialized && is_initialize {
                                 initialized = true;
                             }
                         }
@@ -519,11 +519,6 @@ impl McpServer {
                                 )
                                 .await;
                         }
-                    }
-
-                    // Update initialized state based on response
-                    if !initialized && self.capabilities.tools == Some(true) {
-                        initialized = true;
                     }
                 }
                 Ok(None) => {
