@@ -634,11 +634,28 @@ fn test_prompts_list_with_directory() {
         "Expected result for prompts/list"
     );
 
-    let result = response["result"].as_object().unwrap();
-    let prompts = result["prompts"].as_array().unwrap();
+    let result = response["result"]
+        .as_object()
+        .expect("Expected result object");
+
+    if !result.contains_key("prompts") {
+        panic!(
+            "Response does not contain 'prompts' key. Full response: {:?}",
+            response
+        );
+    }
+
+    let prompts = result["prompts"]
+        .as_array()
+        .expect("Expected prompts to be an array");
 
     // Should have 2 prompt files
-    assert_eq!(prompts.len(), 2, "Should discover all 2 prompt files");
+    assert_eq!(
+        prompts.len(),
+        2,
+        "Should discover all 2 prompt files: {:?}",
+        prompts
+    );
 
     // Check that we found the expected prompts
     let names: Vec<&str> = prompts
