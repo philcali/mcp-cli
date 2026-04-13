@@ -14,7 +14,9 @@
 //! }
 //! ```
 
+pub mod handlers;
 pub mod protocol;
+pub mod routing;
 pub mod server;
 pub mod watcher;
 

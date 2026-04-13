@@ -166,93 +166,104 @@ let prompt_handle = server.start_prompt_watcher()?;
 Watchers verified through integration testing. Cache invalidation triggers on file changes.
 
 ### 8. Server Monolith Refactor & Modularization
-**Pending**: Break up server.rs into focused modules
+**Status**: 🟡 In Progress (Steps 1-2 Complete)
 
-The current `server.rs` is a monolithic file (~1000 lines) mixing concerns:
-- Initialization logic intertwined with request routing
-- Tool/resource/prompt discovery in same file as handlers
-- No clear separation between protocol handling and business logic
-- Duplicate code patterns across handler methods
-- Routing logic scattered throughout
+Successfully refactored server.rs by extracting routing and handlers:
 
-**Proposed structure:**
+**Completed:**
+- ✅ **Routing module** (`src/routing.rs`): Centralized request routing with explicit method→handler mapping
+  - `route_request()` function delegates to handler modules
+  - Added `KNOWN_METHODS` constant for introspection
+  
+- ✅ **Handler modules** (in `src/handlers/`):
+  - `init.rs`: Initialize connection and capability negotiation
+  - `tools.rs`: Tool listing and execution
+  - `resources.rs`: Resource CRUD and subscriptions
+  - `prompts.rs`: Prompt listing and retrieval
+  - All handlers use consistent signature: `async fn handle_XXX(&server, params) -> Result<Value>`
+
+- ✅ **Test coverage**: All 26 integration tests pass after refactoring
+
+**Current structure:**
 ```
 src/
-├── server.rs          # Entry point, stdio transport loop
-├── routing.rs         # Request routing, method dispatch
+├── lib.rs              # Module declarations
+├── main.rs             # CLI entry point
+├── server.rs           # McpServer, ServerBuilder (still ~600 lines)
+├── routing.rs          # ✅ Request routing module
 ├── handlers/
-│   ├── init.rs        # Initialize/initialized handling
-│   ├── tools.rs       # Tool list/call operations
-│   ├── resources.rs   # Resource CRUD and subscriptions
-│   └── prompts.rs     # Prompt listing/retrieval
-├── discovery.rs       # Tool/resource/prompt file discovery
-├── auth/              # Authentication module
-│   ├── config.rs      # Auth configuration loading
-│   └── resolver.rs    # Credential resolution
-├── state.rs           # Shared server state management
-└── watcher.rs         # Unified file system watcher (NEW)
+│   ├── init.rs         # ✅ Initialize handler
+│   ├── tools.rs        # ✅ Tools handlers
+│   ├── resources.rs    # ✅ Resources handlers
+│   └── prompts.rs      # ✅ Prompts handlers
+├── protocol.rs         # MCP protocol types
+└── watcher.rs          # File system watchers
 ```
 
-**Benefits:**
-- Easier to test individual components in isolation
-- Clearer ownership of features (tools team vs resources team)
-- Reduced merge conflicts when multiple people working
-- Better code navigation and discoverability
-- Can progressively refactor without breaking changes
+**Remaining work:**
+1. ⏳ Move discovery logic (`load_tools`, `load_resources`, `load_prompts`) to separate module
+2. ⏳ Introduce `ServerState` struct for clean state management
+3. ⏳ Create dedicated auth module (currently in server.rs)
 
-**Implementation approach:**
-1. Extract routing logic into dedicated module with clear method→handler mapping
-2. Create handler modules with consistent signatures (`async fn handle_XXX(&self, params) -> Result<Value>`)
-3. Move discovery logic to separate module with shared caching interface
-4. Introduce `ServerState` struct for clean state management (replacing scattered fields)
-5. Add integration tests after each extraction to ensure behavior preserved
-
-**Quick win first:** Extract routing (`route_request`) into its own file and add explicit method→handler documentation.
+**Quick win completed**: Extracted routing with explicit method→handler documentation.
 
 ## Architectural Improvements
 
-### 7. Server Monolith Refactor & Modularization
-**Pending**: Break up server.rs into focused modules
+### 7. Daemon Mode: Long-Running stdio Server
+**Pending**: Add flag to run as persistent daemon instead of one-shot handler
 
-The current `server.rs` is a monolithic file (~1000 lines) mixing concerns:
-- Initialization logic intertwined with request routing
-- Tool/resource/prompt discovery in same file as handlers
-- No clear separation between protocol handling and business logic
-- Duplicate code patterns across handler methods
-- Routing logic scattered throughout
+Currently the server is **one-shot per invocation**—each process handles exactly one request, then exits. This works for composable CLI tools but limits performance and real-time capabilities.
 
-**Proposed structure:**
-```
-src/
-├── server.rs          # Entry point, stdio transport loop
-├── routing.rs         # Request routing, method dispatch
-├── handlers/
-│   ├── init.rs        # Initialize/initialized handling
-│   ├── tools.rs       # Tool list/call operations
-│   ├── resources.rs   # Resource CRUD and subscriptions
-│   └── prompts.rs     # Prompt listing/retrieval
-├── discovery.rs       # Tool/resource/prompt file discovery
-├── auth/              # Authentication module
-│   ├── config.rs      # Auth configuration loading
-│   └── resolver.rs    # Credential resolution
-└── state.rs           # Shared server state management
+**Proposal:** Add `--daemon` or `-d` flag to enable long-running stdio mode:
+```bash
+# One-shot (current behavior)
+echo '{"jsonrpc":"2.0","id":1,"method":"initialize",...}' | mcp-cli --tools-dir ./tools
+
+# Daemon mode (new)
+mcp-cli --daemon --tools-dir ./tools
+# Server stays alive, handles multiple requests from same stdin stream
 ```
 
 **Benefits:**
-- Easier to test individual components in isolation
-- Clearer ownership of features (tools team vs resources team)
-- Reduced merge conflicts when multiple people working
-- Better code navigation and discoverability
-- Can progressively refactor without breaking changes
+- **Performance**: No process spawn overhead for each request
+- **State persistence**: Caches remain valid across calls within session
+- **Real-time capabilities**: Can send notifications to client (e.g., `resources/listChanged`)
+- **Better async utilization**: Leverage tokio's async runtime fully
 
 **Implementation approach:**
-1. Extract routing logic into dedicated module with clear method→handler mapping
-2. Create handler modules with consistent signatures (`async fn handle_XXX(&self, params) -> Result<Value>`)
-3. Move discovery logic to separate module with shared caching interface
-4. Introduce `ServerState` struct for clean state management (replacing scattered fields)
-5. Add integration tests after each extraction to ensure behavior preserved
+1. Add CLI flag: `clap::arg!("-d, --daemon", "Run as persistent stdio server")`
+2. Refactor stdin loop into reusable function:
+    ```rust
+    async fn run_one_shot() -> Result<()> { /* current behavior */ }
+    async fn run_daemon(server: &mut McpServer) -> Result<()> {
+        while let Some(req) = read_line().await? {
+            handle_and_send(req, server).await?;
+        }
+    }
+    ```
+3. Add graceful shutdown handling (SIGTERM/SIGINT for systemd compatibility)
+4. Update systemd unit file example:
+    ```ini
+    [Unit]
+    Description=MCP CLI Server
+    After=network.target
 
-**Quick win first:** Extract routing (`route_request`) into its own file and add explicit method→handler documentation.
+    [Service]
+    Type=simple
+    ExecStart=/usr/local/bin/mcp-cli --daemon --tools-dir /etc/mcp/tools --resources-dir /etc/mcp/resources
+    Restart=on-failure
+    RestartSec=5
+
+    [Install]
+    WantedBy=multi-user.target
+    ```
+5. Add integration tests for multi-request sequences in daemon mode
+
+**Tradeoffs:**
+- **Pros**: Better performance, enables notifications, cleaner async model with tokio
+- **Cons**: Process lifecycle management required (systemd or similar), potential resource leaks if not cleaned up properly
+
+**Status**: Ready to implement—tokio runtime already present, minimal code churn needed.
 
 ### 8. Protocol Version Support & Initialization Flow
 **Pending**: Better protocol version handling and initialization

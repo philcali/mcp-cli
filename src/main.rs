@@ -4,12 +4,9 @@
 
 use anyhow::Result;
 use clap::Parser;
+use mcp_cli::server::ServerBuilder;
 use tracing::{Level, info, warn};
 use tracing_subscriber::fmt::format::FmtSpan;
-
-pub mod protocol;
-pub mod server;
-pub mod watcher;
 
 /// Model Context Protocol CLI server
 #[derive(Parser, Debug)]
@@ -39,7 +36,7 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
-    let mut builder = server::ServerBuilder::new("mcp-cli", "0.1.0")
+    let mut builder = ServerBuilder::new("mcp-cli", "0.1.0")
         .with_tools()
         .with_resources(false);
 
@@ -70,7 +67,7 @@ async fn main() -> Result<()> {
         match srv.start_tool_watcher() {
             Ok(handle) => {
                 info!("Started tool watcher");
-                std::mem::forget(handle); // Keep handle alive for lifetime of process
+                std::mem::forget(handle);
             }
             Err(e) => warn!("Failed to start tool watcher: {}", e),
         }
@@ -80,7 +77,7 @@ async fn main() -> Result<()> {
         match srv.start_prompt_watcher() {
             Ok(handle) => {
                 info!("Started prompt watcher");
-                std::mem::forget(handle); // Keep handle alive for lifetime of process
+                std::mem::forget(handle);
             }
             Err(e) => warn!("Failed to start prompt watcher: {}", e),
         }
