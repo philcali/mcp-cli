@@ -39,8 +39,8 @@ pub async fn handle_initialize(
         protocol_version: "2024-11-05".to_string(),
         capabilities: server.capabilities.clone(),
         server_info: Implementation {
-            name: server.name.clone(),
-            version: server.version.clone(),
+            name: server.state.name.clone(),
+            version: server.state.version.clone(),
         },
     };
 

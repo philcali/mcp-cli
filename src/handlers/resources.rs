@@ -7,10 +7,10 @@ use tracing::{debug, info};
 
 /// List available resources.
 pub async fn handle_resources_list(server: &crate::server::McpServer) -> Result<serde_json::Value> {
-    let mut cached = server.cached_resources.lock().unwrap();
+    let mut cached = server.state.cached_resources.lock().unwrap();
 
     // Load resources from directory if not already cached and directory is configured
-    if cached.is_empty() && server.resources_dir.is_some() {
+    if cached.is_empty() && server.state.resources_dir.is_some() {
         *cached = server.load_resources()?;
     }
 
@@ -43,15 +43,10 @@ pub async fn handle_resources_read(
 
     info!("Reading resource: {}", uri_value);
 
-    // First check cache, reload if empty
-    let mut cached = server.cached_resources.lock().unwrap();
+    // Load resources - they are cached in state, but we just read from directory
+    let resources = server.state.load_resources()?;
 
-    if cached.is_empty() {
-        *cached = server.load_resources()?;
-        info!("Reloaded {} resources", cached.len());
-    }
-
-    let entry = cached.iter().find(|r| r.uri == uri_value).cloned();
+    let entry = resources.iter().find(|r| r.uri == uri_value).cloned();
 
     if let Some(entry) = entry {
         info!("Found resource: {:?}", entry.file_path);
@@ -84,12 +79,9 @@ pub async fn handle_resources_subscribe(
     info!("Subscribing to resource: {}", subscribe_params.uri);
 
     // Check if resource exists
-    let mut cached = server.cached_resources.lock().unwrap();
-    if cached.is_empty() {
-        *cached = server.load_resources()?;
-    }
+    let resources = server.state.load_resources()?;
 
-    if !cached.iter().any(|r| r.uri == subscribe_params.uri) {
+    if !resources.iter().any(|r| r.uri == subscribe_params.uri) {
         return Err(anyhow::anyhow!(
             "Resource '{}' does not exist",
             subscribe_params.uri
@@ -97,7 +89,10 @@ pub async fn handle_resources_subscribe(
     }
 
     // Subscribe to the resource
-    let was_new = server.subscription_manager.subscribe(&subscribe_params.uri);
+    let was_new = server
+        .state
+        .subscription_manager
+        .subscribe(&subscribe_params.uri);
 
     if was_new {
         info!("Successfully subscribed to: {}", subscribe_params.uri);
@@ -119,12 +114,9 @@ pub async fn handle_resources_unsubscribe(
     info!("Unsubscribing from resource: {}", unsubscribe_params.uri);
 
     // Check if resource exists first
-    let mut cached = server.cached_resources.lock().unwrap();
-    if cached.is_empty() {
-        *cached = server.load_resources()?;
-    }
+    let resources = server.state.load_resources()?;
 
-    if !cached.iter().any(|r| r.uri == unsubscribe_params.uri) {
+    if !resources.iter().any(|r| r.uri == unsubscribe_params.uri) {
         return Err(anyhow::anyhow!(
             "Resource '{}' does not exist",
             unsubscribe_params.uri
@@ -133,6 +125,7 @@ pub async fn handle_resources_unsubscribe(
 
     // Unsubscribe from the resource
     let was_subscribed = server
+        .state
         .subscription_manager
         .unsubscribe(&unsubscribe_params.uri);
 

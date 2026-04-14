@@ -14,10 +14,13 @@
 //! }
 //! ```
 
+pub mod auth;
+pub mod discovery;
 pub mod handlers;
 pub mod protocol;
 pub mod routing;
 pub mod server;
+pub mod state;
 pub mod watcher;
 
 // Note: tools module uses serde_json but is not exposed here
