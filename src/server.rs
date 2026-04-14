@@ -4,32 +4,26 @@ use crate::handlers::{
     handle_initialize, handle_prompts_get, handle_prompts_list, handle_resources_list,
     handle_tools_call, handle_tools_list,
 };
-use crate::protocol::{load_tool_auth_config, *};
-use crate::watcher::FileSystemWatcher;
+use crate::protocol::*;
+use crate::watcher::{FileSystemWatcher, WatchConfig};
 use anyhow::{Context, Result};
 use serde_json::json;
-use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tracing::{debug, error, info, warn};
+
+pub use crate::state::ServerState;
+
+// Re-export discovery types for convenience
+pub use crate::discovery::tools::ToolDefinition;
+pub type PromptEntry = crate::discovery::prompts::PromptEntry;
 
 /// Client-provided root directory.
 #[derive(Debug, Clone)]
 pub struct Root {
-    uri: String,
+    pub uri: String,
     #[allow(dead_code)]
-    _name: Option<String>,
-}
-
-/// Entry for a discovered prompt with cache metadata.
-#[derive(Debug, Clone)]
-pub struct PromptEntry {
-    pub name: String,
-    pub description: Option<String>,
-    pub arguments: Option<Vec<crate::protocol::PromptArgument>>,
-    pub file_path: PathBuf,
-    pub loaded_at: std::time::Instant,
+    pub name: Option<String>,
 }
 
 /// Configuration for prompt caching.
@@ -50,104 +44,9 @@ impl Default for PromptCacheConfig {
 
 /// Server state and configuration.
 pub struct McpServer {
-    pub name: String,
-    pub version: String,
+    pub state: std::sync::Arc<crate::state::ServerState>,
     pub capabilities: ServerCapabilities,
-    pub tools_dir: Option<PathBuf>,
-    pub cached_tools: Arc<Mutex<HashMap<String, ToolDefinition>>>,
-    pub resources_dir: Option<PathBuf>,
-    pub cached_resources: Mutex<Vec<ResourceEntry>>,
-    pub prompts_dir: Option<PathBuf>,
-    pub cached_prompts: Arc<Mutex<HashMap<String, PromptEntry>>>,
     pub prompt_cache_config: PromptCacheConfig,
-    pub roots: Mutex<Vec<Root>>,
-    pub subscription_manager: std::sync::Arc<dyn crate::protocol::ResourceManager + Send + Sync>,
-}
-
-#[derive(Debug, Clone)]
-pub struct ToolDefinition {
-    pub name: String,
-    pub description: String,
-    pub script_path: PathBuf,
-    pub auth_config: Option<ToolAuthConfig>,
-}
-
-pub struct CredentialResolver;
-
-impl Default for CredentialResolver {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl CredentialResolver {
-    pub fn new() -> Self {
-        Self
-    }
-
-    pub fn resolve_for_tool(
-        tools_dir: &std::path::Path,
-        tool_name: &str,
-    ) -> Result<Vec<(String, String)>> {
-        let auth_config = Self::load_auth_config(tools_dir, tool_name)?;
-        match auth_config {
-            Some(config) => Self::validate_and_inject(&config),
-            None => Ok(Vec::new()),
-        }
-    }
-
-    fn load_auth_config(
-        tools_dir: &std::path::Path,
-        tool_name: &str,
-    ) -> Result<Option<ToolAuthConfig>> {
-        let auth_path = tools_dir.join(tool_name).join(".auth.json");
-        if auth_path.exists() {
-            return load_tool_auth_config(&auth_path);
-        }
-        let flat_auth_path = tools_dir.join(format!("{}.auth.json", tool_name));
-        if flat_auth_path.exists() {
-            return load_tool_auth_config(&flat_auth_path);
-        }
-        Ok(None)
-    }
-
-    fn validate_and_inject(config: &ToolAuthConfig) -> Result<Vec<(String, String)>> {
-        let mut creds = Vec::new();
-        for env_var in &config.required_env_vars {
-            match std::env::var(env_var) {
-                Ok(value) => {
-                    if value.is_empty() {
-                        return Err(anyhow::anyhow!(
-                            "Environment variable '{}' is set but empty.",
-                            env_var
-                        ));
-                    }
-                    creds.push((env_var.clone(), value));
-                }
-                Err(_) => {
-                    let all_env_vars: Vec<String> = config.required_env_vars.to_vec();
-                    return Err(anyhow::anyhow!(
-                        "Missing required environment variable '{}' for tool '{:?}'.\nAvailable: {}\nPlease set {}.",
-                        env_var,
-                        config.strategy,
-                        all_env_vars.join(", "),
-                        env_var
-                    ));
-                }
-            }
-        }
-        Ok(creds)
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct ResourceEntry {
-    pub uri: String,
-    pub resource_type: String,
-    pub name: String,
-    pub description: Option<String>,
-    pub mime_type: Option<String>,
-    pub file_path: PathBuf,
 }
 
 impl Default for McpServer {
@@ -158,23 +57,12 @@ impl Default for McpServer {
 
 impl McpServer {
     pub fn new(name: &str, version: &str) -> Self {
-        let subscription_manager: std::sync::Arc<
-            dyn crate::protocol::ResourceManager + Send + Sync,
-        > = std::sync::Arc::new(crate::protocol::MemorySubscriptionManager::new());
+        let state = std::sync::Arc::new(crate::state::ServerState::new(name, version));
 
         Self {
-            name: name.to_string(),
-            version: version.to_string(),
+            state,
             capabilities: ServerCapabilities::new(),
-            tools_dir: None,
-            cached_tools: Arc::new(Mutex::new(HashMap::new())),
-            resources_dir: None,
-            cached_resources: Mutex::new(Vec::new()),
-            prompts_dir: None,
             prompt_cache_config: PromptCacheConfig::default(),
-            cached_prompts: Arc::new(Mutex::new(HashMap::new())),
-            roots: Mutex::new(Vec::new()),
-            subscription_manager,
         }
     }
 
@@ -184,10 +72,7 @@ impl McpServer {
     }
 
     pub fn add_root(&self, uri: String, name: Option<String>) {
-        let mut roots = self.roots.lock().unwrap();
-        if !roots.iter().any(|r| r.uri == uri) {
-            roots.push(Root { uri, _name: name });
-        }
+        self.state.add_root(uri, name);
     }
 
     #[allow(dead_code)]
@@ -201,147 +86,50 @@ impl McpServer {
     }
 
     pub fn enable_tools_dir(mut self, path: PathBuf) -> Self {
-        self.tools_dir = Some(path);
+        let tools_dir_exists = std::path::Path::new(&path).exists();
+        // Clone the content to get a mutable copy
+        let mut new_state = (*self.state).clone();
+        new_state.tools_dir = Some(path);
+        self.state = std::sync::Arc::new(new_state);
+        if !tools_dir_exists {
+            warn!("Tools directory does not exist");
+        }
         self
     }
 
     pub fn start_tool_watcher(&self) -> Result<std::sync::Arc<tokio::task::JoinHandle<()>>> {
-        let dir = match &self.tools_dir {
+        let dir = match &self.state.tools_dir {
             Some(p) => p.clone(),
             None => return Err(anyhow::anyhow!("No tools directory configured")),
         };
-        let cached_tools_mutex = self.cached_tools.clone();
+        let state_clone = self.state.clone();
         crate::watcher::ToolWatcher::start_watching(
             dir,
-            crate::watcher::WatchConfig {
+            WatchConfig {
                 watch_for_changes: true,
             },
             Box::new(move || {
-                cached_tools_mutex.lock().unwrap().clear();
+                state_clone.cached_tools.lock().unwrap().clear();
             }),
         )
     }
 
-    pub fn load_tools(&self) -> Result<HashMap<String, ToolDefinition>> {
-        let dir = match &self.tools_dir {
-            Some(p) => p,
-            None => return Ok(HashMap::new()),
-        };
-        if !dir.exists() {
-            warn!("Tools directory does not exist: {:?}", dir);
-            return Ok(HashMap::new());
+    pub fn load_tools(&self) -> Result<std::collections::HashMap<String, ToolDefinition>> {
+        match &self.state.tools_dir {
+            Some(dir) => crate::discovery::tools::discover_tools(dir),
+            None => Ok(std::collections::HashMap::new()),
         }
-        let mut tools = HashMap::new();
-        for entry in std::fs::read_dir(dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if !path.is_file() {
-                continue;
-            }
-            let metadata = match std::fs::metadata(&path) {
-                Ok(m) => m,
-                Err(e) => {
-                    warn!("Failed to read metadata for {:?}: {}", path, e);
-                    continue;
-                }
-            };
-            #[cfg(unix)]
-            {
-                use std::os::unix::prelude::*;
-                let mode = metadata.permissions().mode();
-                if mode & 0o111 == 0 {
-                    continue;
-                }
-            }
-            let name = match path.file_stem() {
-                Some(stem) => stem.to_string_lossy().to_string(),
-                None => continue,
-            };
-            let auth_config = match load_tool_auth_config(&path.with_extension("")) {
-                Ok(Some(cfg)) => Some(cfg),
-                Err(e) => {
-                    warn!("Failed to load auth config for {}: {}", name, e);
-                    None
-                }
-                Ok(None) => None,
-            };
-            tools.insert(
-                name.clone(),
-                ToolDefinition {
-                    name: name.clone(),
-                    description: format!("Tool script: {}", path.display()),
-                    script_path: path,
-                    auth_config,
-                },
-            );
-        }
-        Ok(tools)
     }
 
-    pub fn load_resources(&self) -> Result<Vec<ResourceEntry>> {
-        let dir = match &self.resources_dir {
-            Some(p) => p,
-            None => {
-                info!("No resources directory configured");
-                return Ok(Vec::new());
-            }
-        };
-        if !dir.exists() {
-            warn!("Resources directory does not exist: {:?}", dir);
-            return Ok(Vec::new());
-        }
-        debug!("Loading resources from: {:?}", dir);
-        let mut resources = Vec::new();
-        for entry in std::fs::read_dir(dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if !path.is_file() {
-                continue;
-            }
-            let (name, mime_type) = match (path.file_stem(), path.extension()) {
-                (Some(stem), Some(ext)) => (
-                    stem.to_string_lossy().to_string(),
-                    Some(Self::mime_from_extension(ext.to_str().unwrap_or(""))),
-                ),
-                (Some(stem), None) => (stem.to_string_lossy().to_string(), None),
-                _ => continue,
-            };
-            let uri = format!("file://{}", path.display());
-            debug!("Found resource: {} -> {}", name, uri);
-            resources.push(ResourceEntry {
-                uri: uri.clone(),
-                resource_type: "text".to_string(),
-                name: name.clone(),
-                description: Some(format!("Resource file: {}", path.display())),
-                mime_type,
-                file_path: path,
-            });
-        }
-        debug!("Loaded {} resources", resources.len());
-        Ok(resources)
-    }
-
-    fn mime_from_extension(ext: &str) -> String {
-        match ext {
-            "txt" | "text" => "text/plain".to_string(),
-            "md" => "text/markdown".to_string(),
-            "json" => "application/json".to_string(),
-            "xml" => "application/xml".to_string(),
-            "yaml" | "yml" => "application/yaml".to_string(),
-            "toml" => "application/toml".to_string(),
-            "rs" => "text/x-rust".to_string(),
-            "sh" => "application/x-sh".to_string(),
-            "py" => "text/x-python".to_string(),
-            "js" => "application/javascript".to_string(),
-            "html" | "htm" => "text/html".to_string(),
-            "css" => "text/css".to_string(),
-            "csv" => "text/csv".to_string(),
-            _ => "application/octet-stream".to_string(),
-        }
+    pub fn load_resources(&self) -> Result<Vec<crate::discovery::resources::ResourceEntry>> {
+        self.state.load_resources()
     }
 
     pub fn enable_resources_dir(mut self, path: PathBuf) -> Self {
-        self.resources_dir = Some(path);
+        // Clone the content to get a mutable copy
+        let mut new_state = (*self.state).clone();
+        new_state.resources_dir = Some(path);
+        self.state = std::sync::Arc::new(new_state);
         self
     }
 
@@ -356,81 +144,54 @@ impl McpServer {
     }
 
     pub fn enable_prompts_dir(mut self, path: PathBuf) -> Self {
-        self.prompts_dir = Some(path);
+        // Clone the content to get a mutable copy
+        let mut new_state = (*self.state).clone();
+        new_state.prompts_dir = Some(path);
+        self.state = std::sync::Arc::new(new_state);
         self
     }
 
-    pub fn load_prompts(&self) -> Result<HashMap<String, PromptEntry>> {
-        let dir = match &self.prompts_dir {
-            Some(p) => p,
-            None => return Ok(HashMap::new()),
-        };
-        if !dir.exists() {
-            warn!("Prompts directory does not exist: {:?}", dir);
-            return Ok(HashMap::new());
-        }
-        let mut prompts = HashMap::new();
-        for entry in std::fs::read_dir(dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if !path.is_file() || path.extension().and_then(|s| s.to_str()) != Some("json") {
-                continue;
-            }
-            let content = match std::fs::read_to_string(&path) {
-                Ok(c) => c,
-                Err(e) => {
-                    warn!("Failed to read prompt file {:?}: {}", path, e);
-                    continue;
-                }
-            };
-            let prompt_file: crate::protocol::PromptFile = match serde_json::from_str(&content) {
-                Ok(p) => p,
-                Err(e) => {
-                    warn!("Failed to parse prompt file {:?}: {}", path, e);
-                    continue;
-                }
-            };
-            prompts.insert(
-                prompt_file.name.clone(),
-                PromptEntry {
-                    name: prompt_file.name,
-                    description: prompt_file.description,
-                    arguments: prompt_file.arguments,
-                    file_path: path,
-                    loaded_at: std::time::Instant::now(),
-                },
-            );
-        }
-        info!("Loaded {} prompts", prompts.len());
-        Ok(prompts)
+    pub fn load_prompts(
+        &self,
+    ) -> Result<std::collections::HashMap<String, crate::discovery::prompts::PromptEntry>> {
+        self.state.load_prompts()
     }
 
-    fn is_prompt_expired(&self, entry: &PromptEntry) -> bool {
+    fn is_prompt_expired(&self, entry: &crate::discovery::prompts::PromptEntry) -> bool {
         let ttl = std::time::Duration::from_secs(self.prompt_cache_config.ttl_secs);
         entry.loaded_at.elapsed() > ttl
     }
 
-    pub fn get_prompt(&self, name: &str) -> Result<Option<PromptEntry>> {
-        let cached = self.cached_prompts.lock().unwrap();
-        if let Some(entry) = cached.get(name)
-            && !self.is_prompt_expired(entry)
-        {
-            return Ok(Some(entry.clone()));
+    pub fn get_prompt(&self, name: &str) -> Result<Option<crate::discovery::prompts::PromptEntry>> {
+        // Check if cached entry exists and is not expired
+        let (cached_entry, is_expired) = {
+            let cached = self.state.cached_prompts.lock().unwrap();
+            if let Some(entry) = cached.get(name) {
+                let is_expired = self.is_prompt_expired(entry);
+                (Some(entry.clone()), is_expired)
+            } else {
+                (None, true)
+            }
+        };
+
+        if !is_expired {
+            return Ok(cached_entry);
         }
-        drop(cached);
-        let mut cached = self.cached_prompts.lock().unwrap();
+
+        // Cache miss or expired - load fresh prompts and cache them
+        let mut cached = self.state.cached_prompts.lock().unwrap();
         *cached = self.load_prompts()?;
         Ok(cached.get(name).cloned())
     }
 
     pub fn invalidate_prompt_cache(&self) -> Result<()> {
         info!("Invalidating prompt cache");
-        self.cached_prompts.lock().unwrap().clear();
+        self.state.cached_prompts.lock().unwrap().clear();
         Ok(())
     }
 
     pub fn start_prompt_watcher(&self) -> Result<std::sync::Arc<tokio::task::JoinHandle<()>>> {
-        let dir = match &self.prompts_dir {
+        let dir = match &self.state.prompts_dir {
             Some(p) => p.clone(),
             None => return Err(anyhow::anyhow!("No prompts directory configured")),
         };
@@ -438,14 +199,14 @@ impl McpServer {
             warn!("Prompt file watching is disabled");
             return Ok(std::sync::Arc::new(tokio::task::spawn(async {})));
         }
-        let cached_prompts_mutex = self.cached_prompts.clone();
+        let state_clone = self.state.clone();
         crate::watcher::PromptWatcher::start_watching(
             dir,
-            crate::watcher::WatchConfig {
+            WatchConfig {
                 watch_for_changes: true,
             },
             Box::new(move || {
-                cached_prompts_mutex.lock().unwrap().clear();
+                state_clone.cached_prompts.lock().unwrap().clear();
             }),
         )
     }
@@ -546,12 +307,12 @@ impl McpServer {
     #[allow(dead_code)]
     pub async fn handle_roots_list(&self) -> Result<serde_json::Value> {
         info!("Handling roots list request");
-        let roots = self.roots.lock().unwrap();
+        let roots = self.state.roots.lock().unwrap();
         let roots_list: Vec<_> = roots
             .iter()
             .map(|root| {
-                if let Some(ref _name) = root._name {
-                    json!({ "uri": root.uri, "name": _name })
+                if let Some(ref name) = root.name {
+                    json!({ "uri": root.uri, "name": name })
                 } else {
                     json!({ "uri": root.uri })
                 }
@@ -585,12 +346,8 @@ impl McpServer {
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing 'uri' parameter"))?;
         info!("Reading resource: {}", uri_value);
-        let mut cached = self.cached_resources.lock().unwrap();
-        if cached.is_empty() {
-            *cached = self.load_resources()?;
-            info!("Reloaded {} resources", cached.len());
-        }
-        if let Some(entry) = cached.iter().find(|r| r.uri == uri_value).cloned() {
+        let resources = self.state.load_resources()?;
+        if let Some(entry) = resources.iter().find(|r| r.uri == uri_value).cloned() {
             info!("Found resource: {:?}", entry.file_path);
             let content = std::fs::read_to_string(&entry.file_path)?;
             Ok(
@@ -610,17 +367,17 @@ impl McpServer {
             serde_json::from_value(params.clone())
                 .context("Failed to parse resources/subscribe parameters")?;
         info!("Subscribing to resource: {}", subscribe_params.uri);
-        let mut cached = self.cached_resources.lock().unwrap();
-        if cached.is_empty() {
-            *cached = self.load_resources()?;
-        }
-        if !cached.iter().any(|r| r.uri == subscribe_params.uri) {
+        let resources = self.state.load_resources()?;
+        if !resources.iter().any(|r| r.uri == subscribe_params.uri) {
             return Err(anyhow::anyhow!(
                 "Resource '{}' does not exist",
                 subscribe_params.uri
             ));
         }
-        let was_new = self.subscription_manager.subscribe(&subscribe_params.uri);
+        let was_new = self
+            .state
+            .subscription_manager
+            .subscribe(&subscribe_params.uri);
         if was_new {
             info!("Successfully subscribed to: {}", subscribe_params.uri);
         } else {
@@ -638,17 +395,15 @@ impl McpServer {
             serde_json::from_value(params.clone())
                 .context("Failed to parse resources/unsubscribe parameters")?;
         info!("Unsubscribing from resource: {}", unsubscribe_params.uri);
-        let mut cached = self.cached_resources.lock().unwrap();
-        if cached.is_empty() {
-            *cached = self.load_resources()?;
-        }
-        if !cached.iter().any(|r| r.uri == unsubscribe_params.uri) {
+        let resources = self.state.load_resources()?;
+        if !resources.iter().any(|r| r.uri == unsubscribe_params.uri) {
             return Err(anyhow::anyhow!(
                 "Resource '{}' does not exist",
                 unsubscribe_params.uri
             ));
         }
         let was_subscribed = self
+            .state
             .subscription_manager
             .unsubscribe(&unsubscribe_params.uri);
         if !was_subscribed {
@@ -773,9 +528,16 @@ mod tests {
             });
         server.invalidate_prompt_cache().unwrap();
         let _entry = server.get_prompt("test").unwrap();
-        assert!(server.cached_prompts.lock().unwrap().contains_key("test"));
+        assert!(
+            server
+                .state
+                .cached_prompts
+                .lock()
+                .unwrap()
+                .contains_key("test")
+        );
         std::thread::sleep(std::time::Duration::from_secs(2));
-        if let Some(entry) = server.cached_prompts.lock().unwrap().get("test") {
+        if let Some(entry) = server.state.cached_prompts.lock().unwrap().get("test") {
             assert!(server.is_prompt_expired(entry));
         }
     }
@@ -792,8 +554,15 @@ mod tests {
         let server = McpServer::new("test-server", "1.0.0")
             .enable_prompts_dir(temp_dir.path().to_path_buf());
         let _result: serde_json::Value = server.handle_prompts_list().await.unwrap();
-        assert!(server.cached_prompts.lock().unwrap().contains_key("test"));
+        assert!(
+            server
+                .state
+                .cached_prompts
+                .lock()
+                .unwrap()
+                .contains_key("test")
+        );
         server.invalidate_prompt_cache().unwrap();
-        assert!(server.cached_prompts.lock().unwrap().is_empty());
+        assert!(server.state.cached_prompts.lock().unwrap().is_empty());
     }
 }

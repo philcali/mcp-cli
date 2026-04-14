@@ -1,16 +1,15 @@
 //! Tool list and execution handlers.
 
 use crate::protocol::*;
-use crate::server::CredentialResolver;
 use anyhow::{Context, Result};
 use serde_json::json;
 use tracing::{debug, info};
 
 /// List available tools.
 pub async fn handle_tools_list(server: &crate::server::McpServer) -> Result<serde_json::Value> {
-    let mut cached = server.cached_tools.lock().unwrap();
+    let mut cached = server.state.cached_tools.lock().unwrap();
 
-    if cached.is_empty() && server.tools_dir.is_some() {
+    if cached.is_empty() && server.state.tools_dir.is_some() {
         *cached = server.load_tools()?;
     }
 
@@ -36,12 +35,12 @@ pub async fn handle_tools_call(
         serde_json::from_value(params.clone()).context("Failed to parse tool call parameters")?;
 
     let (script_path, auth_config) = {
-        let cached = server.cached_tools.lock().unwrap();
+        let cached = server.state.cached_tools.lock().unwrap();
         if let Some(tool) = cached.get(&call_params.name) {
             (tool.script_path.clone(), tool.auth_config.clone())
         } else {
             drop(cached);
-            let mut cached = server.cached_tools.lock().unwrap();
+            let mut cached = server.state.cached_tools.lock().unwrap();
             *cached = server.load_tools()?;
             match cached.get(&call_params.name) {
                 Some(tool) => (tool.script_path.clone(), tool.auth_config.clone()),
@@ -51,9 +50,9 @@ pub async fn handle_tools_call(
     };
 
     if let Some(ref _config) = auth_config
-        && let Some(ref tools_dir) = server.tools_dir
+        && let Some(ref tools_dir) = server.state.tools_dir
     {
-        match CredentialResolver::resolve_for_tool(tools_dir, &call_params.name) {
+        match crate::auth::resolve_credentials(tools_dir, &call_params.name) {
             Ok(creds) => {
                 debug!(
                     "Resolved {} credential(s) for tool '{}'",

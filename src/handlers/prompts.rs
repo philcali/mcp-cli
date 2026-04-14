@@ -6,9 +6,9 @@ use serde_json::json;
 
 /// List available prompts.
 pub async fn handle_prompts_list(server: &crate::server::McpServer) -> Result<serde_json::Value> {
-    let mut cached = server.cached_prompts.lock().unwrap();
+    let mut cached = server.state.cached_prompts.lock().unwrap();
 
-    if cached.is_empty() && server.prompts_dir.is_some() {
+    if cached.is_empty() && server.state.prompts_dir.is_some() {
         *cached = server.load_prompts()?;
     }
 
