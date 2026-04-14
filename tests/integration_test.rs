@@ -122,10 +122,23 @@ fn run_request_sequence(
             };
 
             writeln!(stdin, "{}", request).unwrap();
+            stdin.flush().unwrap();
+
+            // Read the response for this specific request before sending the next one
+            if let Some(ref mut stdout) = child.stdout {
+                let line = std::io::BufReader::new(stdout)
+                    .lines()
+                    .map_while(|l| l.ok())
+                    .find(|line| line.trim_start().starts_with('{'));
+
+                if let Some(line) = line {
+                    results.push(serde_json::from_str(&line).expect("Failed to parse response"));
+                }
+            }
         }
     }
 
-    // Read all responses
+    // Read any remaining responses (should be none in normal operation)
     if let Some(stdout) = child.stdout.take() {
         for line in std::io::BufReader::new(stdout)
             .lines()
