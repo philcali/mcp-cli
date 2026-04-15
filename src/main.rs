@@ -23,6 +23,10 @@ struct Cli {
     /// Directory path for prompts
     #[arg(long, short)]
     prompts_dir: Option<std::path::PathBuf>,
+
+    /// Run as persistent stdio server (daemon mode)
+    #[arg(long, short)]
+    daemon: bool,
 }
 
 #[tokio::main]
@@ -84,7 +88,13 @@ async fn main() -> Result<()> {
     }
 
     info!("MCP server starting...");
-    srv.run().await?;
+
+    if cli.daemon {
+        info!("Running in daemon mode (persistent server)");
+        srv.run_daemon().await?;
+    } else {
+        srv.run().await?;
+    }
 
     Ok(())
 }

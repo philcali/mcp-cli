@@ -6,6 +6,13 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
 
+// Import tracing for logging in tests
+use tracing::info;
+
+// Import libc for kill signal
+#[cfg(unix)]
+use libc;
+
 /// Spawn the MCP server with optional resources and prompts directories.
 fn run_request_with_dirs(
     method: &str,
@@ -151,6 +158,70 @@ fn run_request_sequence(
     }
 
     let _output = child.wait_with_output();
+    results
+}
+
+/// Run requests in daemon mode (persistent server that handles multiple requests).
+fn run_request_sequence_daemon(
+    requests: Vec<(&str, Option<&serde_json::Value>)>,
+) -> Vec<serde_json::Value> {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_mcp-cli"));
+    cmd.arg("--daemon");
+
+    let mut child = cmd
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("Failed to spawn mcp-cli daemon");
+
+    let mut results: Vec<serde_json::Value> = Vec::new();
+
+    if let Some(mut stdin) = child.stdin.take() {
+        for (i, (method, params)) in requests.iter().enumerate() {
+            let id = i as i64 + 1;
+            let req = serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": method,
+            });
+
+            let request = if let Some(p) = params {
+                let mut r = req.as_object().unwrap().clone();
+                r.insert("params".to_string(), (*p).clone());
+                serde_json::Value::Object(r)
+            } else {
+                req
+            };
+
+            writeln!(stdin, "{}", request).unwrap();
+            stdin.flush().unwrap();
+
+            // Read the response for this specific request before sending the next one
+            if let Some(ref mut stdout) = child.stdout {
+                let line = std::io::BufReader::new(stdout)
+                    .lines()
+                    .map_while(|l| l.ok())
+                    .find(|line| line.trim_start().starts_with('{'));
+
+                if let Some(line) = line {
+                    results.push(serde_json::from_str(&line).expect("Failed to parse response"));
+                }
+            }
+        }
+    }
+
+    // Send SIGTERM signal to gracefully terminate the daemon
+    #[cfg(unix)]
+    unsafe {
+        use libc::{SIGTERM, kill};
+
+        kill(child.id() as i32, SIGTERM);
+    }
+
+    let output = child.wait_with_output().unwrap();
+    info!("Daemon process exited with status: {:?}", output.status);
+
     results
 }
 
@@ -1196,4 +1267,75 @@ fn test_resources_subscribe_and_read() {
     let contents = result["contents"].as_array().unwrap();
     assert_eq!(contents.len(), 1);
     assert_eq!(contents[0]["text"], "Hello, World!");
+}
+
+// ===========================================================================
+/// DAEMON MODE TESTS
+// ===========================================================================
+
+#[test]
+fn test_daemon_mode_initialize_and_list() {
+    // Initialize and list tools in daemon mode (same connection)
+    let results = run_request_sequence_daemon(vec![
+        (
+            "initialize",
+            Some(&serde_json::json!({
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {
+                    "name": "test-client",
+                    "version": "1.0"
+                }
+            })),
+        ),
+        ("tools/list", None),
+    ]);
+
+    assert_eq!(results.len(), 2);
+
+    // Check initialization succeeded
+    assert!(
+        results[0].get("result").is_some(),
+        "Expected successful initialize, got: {:?}",
+        results[0]
+    );
+
+    // Check tools/list returned result (may be empty if no tools dir)
+    let tools_result = &results[1]["result"];
+    assert!(
+        tools_result.is_object(),
+        "Expected tools/list to return an object"
+    );
+}
+
+#[test]
+fn test_daemon_mode_multiple_requests() {
+    // Test multiple requests in sequence on same daemon connection
+    let results = run_request_sequence_daemon(vec![
+        (
+            "initialize",
+            Some(&serde_json::json!({
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {
+                    "name": "test-client",
+                    "version": "1.0"
+                }
+            })),
+        ),
+        ("resources/list", None),
+        ("roots/list", None),
+    ]);
+
+    assert_eq!(results.len(), 3);
+
+    // All should succeed
+    for (i, result) in results.iter().enumerate() {
+        assert!(
+            result.get("result").is_some(),
+            "Request {} should succeed, got error: {:?}",
+            i + 1,
+            result.get("error")
+        );
+    }
 }
