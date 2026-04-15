@@ -9,10 +9,6 @@ use tempfile::TempDir;
 // Import tracing for logging in tests
 use tracing::info;
 
-// Import libc for kill signal
-#[cfg(unix)]
-use libc;
-
 /// Spawn the MCP server with optional resources and prompts directories.
 fn run_request_with_dirs(
     method: &str,
