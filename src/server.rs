@@ -211,11 +211,13 @@ impl McpServer {
         )
     }
 
+    /// Run in one-shot mode: process stdin until EOF, then exit.
     pub async fn run(&mut self) -> Result<()> {
         let stdin = tokio::io::stdin();
         let mut reader = BufReader::new(stdin).lines();
         info!("MCP server starting, waiting for messages...");
         let mut initialized = false;
+
         loop {
             match reader.next_line().await {
                 Ok(Some(line)) => {
@@ -249,7 +251,10 @@ impl McpServer {
                         }
                     }
                 }
-                Ok(None) => break,
+                Ok(None) => {
+                    info!("EOF received, exiting");
+                    break;
+                }
                 Err(e) => {
                     error!("Read error: {}", e);
                     break;
@@ -257,6 +262,96 @@ impl McpServer {
             }
         }
         Ok(())
+    }
+
+    /// Run in daemon mode with graceful shutdown support.
+    /// Blocks until SIGINT or SIGTERM is received.
+    pub async fn run_daemon(&mut self) -> Result<()> {
+        // Set up signal handlers for Unix platforms
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{SignalKind, signal};
+
+            let mut term_signal = signal(SignalKind::terminate())?;
+            let mut int_signal = signal(SignalKind::interrupt())?;
+
+            info!("Daemon mode: waiting for SIGINT or SIGTERM...");
+
+            loop {
+                tokio::select! {
+                    // Process stdin loop
+                    result = self.stdin_loop_daemon() => {
+                        if let Err(e) = result {
+                            error!("stdin loop error: {}", e);
+                        }
+                    }
+                    // Wait for signals
+                    _ = term_signal.recv() => {
+                        info!("Received SIGTERM, exiting gracefully...");
+                        break;
+                    }
+                    _ = int_signal.recv() => {
+                        info!("Received SIGINT (Ctrl-C), exiting gracefully...");
+                        break;
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Internal stdin loop for daemon mode - processes lines until EOF.
+    async fn stdin_loop_daemon(&mut self) -> Result<()> {
+        let stdin = tokio::io::stdin();
+        let mut reader = BufReader::new(stdin).lines();
+        info!("Daemon mode: waiting for messages...");
+        let mut initialized = false;
+
+        loop {
+            match reader.next_line().await {
+                Ok(Some(line)) => {
+                    if line.trim().is_empty() {
+                        continue;
+                    }
+                    debug!("Received message: {}", line);
+                    let is_initialize = serde_json::from_str::<serde_json::Value>(&line)
+                        .ok()
+                        .map(|v| v.get("method").and_then(|m| m.as_str()) == Some("initialize"))
+                        .unwrap_or(false);
+                    match self.handle_request(&line, initialized).await {
+                        Ok(response) => {
+                            let _ = tokio::io::stdout()
+                                .write_all(format!("{}\n", response).as_bytes())
+                                .await;
+                            let _ = tokio::io::stdout().flush().await;
+                            if !initialized && is_initialize {
+                                initialized = true;
+                            }
+                        }
+                        Err(e) => {
+                            error!("Error processing message: {}", e);
+                            let err_resp = json!({ "jsonrpc": "2.0", "error": JsonRpcError::internal_error(&e.to_string()), "id": null });
+                            let _ = tokio::io::stdout()
+                                .write_all(
+                                    format!("{}\n", serde_json::to_string(&err_resp).unwrap())
+                                        .as_bytes(),
+                                )
+                                .await;
+                        }
+                    }
+                }
+                Ok(None) => {
+                    // In daemon mode, when stdin closes (client disconnected),
+                    // we keep waiting for more input
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+                Err(e) => {
+                    error!("Read error: {}", e);
+                    return Err(anyhow::anyhow!(e));
+                }
+            }
+        }
     }
 
     async fn handle_request(&self, line: &str, initialized: bool) -> Result<String> {
