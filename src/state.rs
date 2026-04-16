@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tracing::info;
 
@@ -22,6 +23,8 @@ pub struct ServerState {
     pub cached_prompts: Arc<Mutex<HashMap<String, PromptEntry>>>,
     pub roots: Mutex<Vec<crate::server::Root>>,
     pub subscription_manager: Arc<dyn ResourceManager + Send + Sync>,
+    /// Whether the server has been successfully initialized
+    pub initialized: AtomicBool,
 }
 
 impl Clone for ServerState {
@@ -37,6 +40,7 @@ impl Clone for ServerState {
             cached_prompts: Arc::clone(&self.cached_prompts),
             roots: Mutex::new(self.roots.lock().unwrap().clone()),
             subscription_manager: Arc::clone(&self.subscription_manager),
+            initialized: AtomicBool::new(self.initialized.load(Ordering::SeqCst)),
         }
     }
 }
@@ -57,7 +61,18 @@ impl ServerState {
             cached_prompts: Arc::new(Mutex::new(HashMap::new())),
             roots: Mutex::new(Vec::new()),
             subscription_manager,
+            initialized: AtomicBool::new(false),
         }
+    }
+
+    /// Mark the server as initialized.
+    pub fn set_initialized(&self) {
+        self.initialized.store(true, Ordering::SeqCst);
+    }
+
+    /// Check if the server is initialized.
+    pub fn is_initialized(&self) -> bool {
+        self.initialized.load(Ordering::SeqCst)
     }
 
     pub fn with_tools_dir(mut self, path: PathBuf) -> Self {

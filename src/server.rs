@@ -216,7 +216,6 @@ impl McpServer {
         let stdin = tokio::io::stdin();
         let mut reader = BufReader::new(stdin).lines();
         info!("MCP server starting, waiting for messages...");
-        let mut initialized = false;
 
         loop {
             match reader.next_line().await {
@@ -229,14 +228,17 @@ impl McpServer {
                         .ok()
                         .map(|v| v.get("method").and_then(|m| m.as_str()) == Some("initialize"))
                         .unwrap_or(false);
-                    match self.handle_request(&line, initialized).await {
+                    match self
+                        .handle_request(&line, self.state.is_initialized())
+                        .await
+                    {
                         Ok(response) => {
                             let _ = tokio::io::stdout()
                                 .write_all(format!("{}\n", response).as_bytes())
                                 .await;
                             let _ = tokio::io::stdout().flush().await;
-                            if !initialized && is_initialize {
-                                initialized = true;
+                            if !self.state.is_initialized() && is_initialize {
+                                self.state.set_initialized();
                             }
                         }
                         Err(e) => {
@@ -306,7 +308,6 @@ impl McpServer {
         let stdin = tokio::io::stdin();
         let mut reader = BufReader::new(stdin).lines();
         info!("Daemon mode: waiting for messages...");
-        let mut initialized = false;
 
         loop {
             match reader.next_line().await {
@@ -319,14 +320,17 @@ impl McpServer {
                         .ok()
                         .map(|v| v.get("method").and_then(|m| m.as_str()) == Some("initialize"))
                         .unwrap_or(false);
-                    match self.handle_request(&line, initialized).await {
+                    match self
+                        .handle_request(&line, self.state.is_initialized())
+                        .await
+                    {
                         Ok(response) => {
                             let _ = tokio::io::stdout()
                                 .write_all(format!("{}\n", response).as_bytes())
                                 .await;
                             let _ = tokio::io::stdout().flush().await;
-                            if !initialized && is_initialize {
-                                initialized = true;
+                            if !self.state.is_initialized() && is_initialize {
+                                self.state.set_initialized();
                             }
                         }
                         Err(e) => {

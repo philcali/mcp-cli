@@ -268,12 +268,11 @@ fn setup_test_resources() -> TempDir {
 
 #[test]
 fn test_ping_before_initialize() {
+    // Ping now works before initialize as a health check
     let response = run_request("ping", None, 1);
 
-    assert!(
-        response.get("error").is_some(),
-        "Expected error before initialize"
-    );
+    assert_eq!(response["jsonrpc"], "2.0");
+    assert_eq!(response.get("error"), None);
     assert_eq!(response["id"], serde_json::Value::Number(1.into()));
 }
 

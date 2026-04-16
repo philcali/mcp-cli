@@ -210,75 +210,63 @@ src/
 ## Architectural Improvements
 
 ### 7. Daemon Mode: Long-Running stdio Server
-**Pending**: Add flag to run as persistent daemon instead of one-shot handler
+**Status**: ✅ Completed
 
-Currently the server is **one-shot per invocation**—each process handles exactly one request, then exits. This works for composable CLI tools but limits performance and real-time capabilities.
+Implemented long-running daemon mode for persistent stdio server:
 
-**Proposal:** Add `--daemon` or `-d` flag to enable long-running stdio mode:
+**What was done:**
+- **CLI flag**: Added `--daemon`/`-d` flag to enable persistent mode
+- **Stdin loop**: Dedicated `stdin_loop_daemon()` processes requests continuously
+- **Graceful shutdown**: SIGTERM/SIGINT handling via tokio signal listeners
+- **Client disconnection recovery**: When stdin closes, server continues waiting instead of exiting
+
+**Differences from one-shot mode:**
+| Aspect | One-shot | Daemon |
+|--------|----------|--------|
+| Stdin EOF behavior | Exits gracefully | Keeps listening for new connections |
+| Signal handling | None | SIGTERM/SIGINT handled |
+| Use case | Composable tools | LSP-style persistent server |
+
+**Usage:**
 ```bash
-# One-shot (current behavior)
+# One-shot (current default)
 echo '{"jsonrpc":"2.0","id":1,"method":"initialize",...}' | mcp-cli --tools-dir ./tools
 
-# Daemon mode (new)
-mcp-cli --daemon --tools-dir ./tools
-# Server stays alive, handles multiple requests from same stdin stream
+# Daemon mode
+mcp-cli --daemon --tools-dir ./tools --resources-dir ./resources
 ```
 
-**Benefits:**
-- **Performance**: No process spawn overhead for each request
-- **State persistence**: Caches remain valid across calls within session
-- **Real-time capabilities**: Can send notifications to client (e.g., `resources/listChanged`)
-- **Better async utilization**: Leverage tokio's async runtime fully
-
-**Implementation approach:**
-1. Add CLI flag: `clap::arg!("-d, --daemon", "Run as persistent stdio server")`
-2. Refactor stdin loop into reusable function:
-    ```rust
-    async fn run_one_shot() -> Result<()> { /* current behavior */ }
-    async fn run_daemon(server: &mut McpServer) -> Result<()> {
-        while let Some(req) = read_line().await? {
-            handle_and_send(req, server).await?;
-        }
-    }
-    ```
-3. Add graceful shutdown handling (SIGTERM/SIGINT for systemd compatibility)
-4. Update systemd unit file example:
-    ```ini
-    [Unit]
-    Description=MCP CLI Server
-    After=network.target
-
-    [Service]
-    Type=simple
-    ExecStart=/usr/local/bin/mcp-cli --daemon --tools-dir /etc/mcp/tools --resources-dir /etc/mcp/resources
-    Restart=on-failure
-    RestartSec=5
-
-    [Install]
-    WantedBy=multi-user.target
-    ```
-5. Add integration tests for multi-request sequences in daemon mode
-
-**Tradeoffs:**
-- **Pros**: Better performance, enables notifications, cleaner async model with tokio
-- **Cons**: Process lifecycle management required (systemd or similar), potential resource leaks if not cleaned up properly
-
-**Status**: Ready to implement—tokio runtime already present, minimal code churn needed.
+**Integration tests**: Tests verify multi-request sequences and graceful shutdown.
 
 ### 8. Protocol Version Support & Initialization Flow
-**Pending**: Better protocol version handling and initialization
+**Status**: ✅ Completed
 
-Currently only accepts versions starting with "2024-" (hardcoded check). The init flow has issues:
-- Duplicate protocol validation code (now fixed)
-- Fragile `initialized` flag based on response string matching
-- No proper negotiation of protocol capabilities
-- Client roots handling mixed with version checking
+Implemented improved protocol version handling and initialization:
 
-**Proposed improvements:**
-- Version negotiation with clear error messages for unsupported versions
-- Separate initialization state from capabilities (use explicit `initialized: bool` field)
-- Capability-based feature detection instead of hardcoded checks
-- Proper lifecycle management: init → ready → handle requests
+**What was done:**
+- **Protocol version negotiation**: `negotiate_protocol_version()` function supports:
+  - Exact matches for known versions (`2024-11-05`, `2024-10-07`)
+  - Forward compatibility with any `2024-*` version
+  - Clear error messages listing supported versions
+
+- **Explicit initialized state**: Added `ServerState.initialized: AtomicBool`
+  - Thread-safe atomic flag for initialization status
+  - Set on successful `initialize` response
+  - Checked before handling requests (except `ping`)
+
+- **Cleaned routing logic**: Removed duplicate initialized checks, unified through server state
+
+**Error message example:**
+```json
+{
+  "error": {
+    "code": -32602,
+    "message": "Unsupported protocol version '2025-01-01'. Supported versions: 2024-11-05, 2024-10-07"
+  }
+}
+```
+
+**Health check before init**: `ping` method now works without initialization for health monitoring.
 
 ## Additional Features
 
