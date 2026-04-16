@@ -17,6 +17,24 @@ pub async fn handle_initialize(
         init_params.client_info.name, init_params.protocol_version
     );
 
+    // Negotiate protocol version
+    match negotiate_protocol_version(&init_params.protocol_version) {
+        VersionNegotiationResult::Supported(version)
+        | VersionNegotiationResult::Compatible(version) => {
+            debug!("Negotiated protocol version: {}", version);
+        }
+        VersionNegotiationResult::Unsupported {
+            received,
+            supported,
+        } => {
+            let error = InitError::UnsupportedProtocol {
+                received: received.clone(),
+                supported: supported.clone(),
+            };
+            return Err(anyhow::anyhow!("{}", error));
+        }
+    }
+
     if let Some(roots_cap) = &init_params.capabilities.roots {
         debug!(
             "Client supports roots listing: {:?}",
@@ -31,9 +49,11 @@ pub async fn handle_initialize(
         }
     }
 
-    if !init_params.protocol_version.starts_with("2024-") {
-        return Err(anyhow::anyhow!("Unsupported protocol version"));
-    }
+    // Set initialized flag on successful initialization (via Arc)
+    server
+        .state
+        .initialized
+        .store(true, std::sync::atomic::Ordering::SeqCst);
 
     let result = InitResult {
         protocol_version: "2024-11-05".to_string(),

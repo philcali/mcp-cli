@@ -16,15 +16,12 @@ pub async fn route_request(
         "resources/unsubscribe" => {
             crate::handlers::handle_resources_unsubscribe(server, params).await
         }
-        _ if !initialized => Err(anyhow::anyhow!("Server not initialized")),
+        // After initialize succeeds, server will be marked initialized
+        // We only reject requests if explicitly not initialized (initialize not yet called)
+        _ if !initialized && method != "ping" => Err(anyhow::anyhow!("Server not initialized")),
         "initialized" => Ok(json!({})),
         "ping" => Ok(json!({})),
-        "roots/list" => {
-            if !initialized {
-                return Err(anyhow::anyhow!("Server not initialized"));
-            }
-            server.handle_roots_list().await
-        }
+        "roots/list" => server.handle_roots_list().await,
         "tools/list" => crate::handlers::handle_tools_list(server).await,
         "tools/call" => crate::handlers::handle_tools_call(server, params).await,
         "resources/read" => server.handle_resources_read(params).await,

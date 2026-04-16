@@ -951,3 +951,97 @@ pub fn validate_prompt_arguments(
 
     Ok(())
 }
+
+// ===========================================================================
+// PROTOCOL VERSION SUPPORT
+// ===========================================================================
+
+/// Supported MCP protocol versions (in order of preference).
+pub const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &["2024-11-05", "2024-10-07"];
+
+/// Protocol version negotiation result.
+#[derive(Debug, Clone, PartialEq)]
+pub enum VersionNegotiationResult {
+    /// Version is supported and will be used
+    Supported(String),
+    /// Version starts with "2024-" but is not explicitly in our list
+    Compatible(String),
+    /// Version is not a valid 2024-x protocol version
+    Unsupported {
+        received: String,
+        supported: Vec<String>,
+    },
+}
+
+/// Negotiate protocol version with client.
+/// Returns the version to use if negotiation succeeds.
+pub fn negotiate_protocol_version(client_version: &str) -> VersionNegotiationResult {
+    let client_version = client_version.trim();
+
+    // Check for exact matches first (in order of preference)
+    for supported in SUPPORTED_PROTOCOL_VERSIONS {
+        if client_version == *supported {
+            return VersionNegotiationResult::Supported(client_version.to_string());
+        }
+    }
+
+    // Allow any version starting with "2024-" as compatible
+    // This provides forward compatibility with future 2024 versions
+    if client_version.starts_with("2024-") {
+        return VersionNegotiationResult::Compatible(client_version.to_string());
+    }
+
+    // Version is not supported
+    VersionNegotiationResult::Unsupported {
+        received: client_version.to_string(),
+        supported: SUPPORTED_PROTOCOL_VERSIONS
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
+    }
+}
+
+/// Error type for protocol initialization failures.
+#[derive(Debug, Clone)]
+pub enum InitError {
+    /// Protocol version is not supported
+    UnsupportedProtocol {
+        received: String,
+        supported: Vec<String>,
+    },
+    /// Failed to parse initialize parameters
+    InvalidParams(String),
+    /// Server configuration error
+    Configuration(String),
+}
+
+impl std::fmt::Display for InitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            InitError::UnsupportedProtocol {
+                received,
+                supported,
+            } => {
+                write!(
+                    f,
+                    "Unsupported protocol version '{}'. Supported versions: {}",
+                    received,
+                    supported.join(", ")
+                )
+            }
+            InitError::InvalidParams(msg) => write!(f, "Invalid initialize parameters: {}", msg),
+            InitError::Configuration(msg) => write!(f, "Server configuration error: {}", msg),
+        }
+    }
+}
+
+impl std::error::Error for InitError {}
+
+/// Create an appropriate JSON-RPC error for protocol errors.
+pub fn protocol_error_to_json_rpc(error: &InitError) -> JsonRpcError {
+    match error {
+        InitError::UnsupportedProtocol { .. } => JsonRpcError::invalid_params(&error.to_string()),
+        InitError::InvalidParams(msg) => JsonRpcError::invalid_params(msg),
+        InitError::Configuration(msg) => JsonRpcError::internal_error(msg),
+    }
+}
