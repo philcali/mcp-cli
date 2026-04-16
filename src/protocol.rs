@@ -953,6 +953,44 @@ pub fn validate_prompt_arguments(
 }
 
 // ===========================================================================
+// LOGGING SUPPORT
+// ===========================================================================
+
+/// Log message level.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum LogLevel {
+    Debug,
+    Info,
+    Notice,
+    Warning,
+    Error,
+    Critical,
+    Alert,
+    Emergency,
+}
+
+/// Log message request parameters from client.
+#[derive(Debug, Deserialize)]
+pub struct LogMessageParams {
+    /// Message level
+    pub level: LogLevel,
+    /// Logger name (optional)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub logger: Option<String>,
+    /// The log message content
+    pub message: String,
+}
+
+/// Result of logging a message.
+#[derive(Debug, Serialize, Default)]
+pub struct LogMessageResult {
+    // MCP spec doesn't define any result fields for this method
+    #[serde(skip_serializing)]
+    _empty: (),
+}
+
+// ===========================================================================
 // PROTOCOL VERSION SUPPORT
 // ===========================================================================
 

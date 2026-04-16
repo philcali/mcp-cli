@@ -1334,3 +1334,188 @@ fn test_daemon_mode_multiple_requests() {
         );
     }
 }
+
+// ===========================================================================
+/// LOGGING TESTS
+// ===========================================================================
+
+#[test]
+fn test_logging_messages_before_initialize() {
+    // logging/messages should fail before initialize
+    let response = run_request("logging/messages", None, 1);
+
+    assert!(
+        response.get("error").is_some(),
+        "Expected error before initialize"
+    );
+}
+
+#[test]
+fn test_logging_messages_with_info_level() {
+    let init_params = serde_json::json!({
+        "protocolVersion": "2024-11-05",
+        "capabilities": {},
+        "clientInfo": {
+            "name": "test-client",
+            "version": "1.0"
+        }
+    });
+
+    let log_params = serde_json::json!({
+        "level": "info",
+        "logger": "test-logger",
+        "message": "This is a test info message"
+    });
+
+    let results = run_request_sequence(
+        None,
+        None,
+        vec![
+            ("initialize", Some(&init_params)),
+            ("logging/messages", Some(&log_params)),
+        ],
+    );
+
+    assert_eq!(results.len(), 2);
+    // logging/messages returns empty object on success
+    assert!(
+        results[1].get("result").is_some(),
+        "Expected result for logging/messages"
+    );
+}
+
+#[test]
+fn test_logging_messages_with_debug_level() {
+    let init_params = serde_json::json!({
+        "protocolVersion": "2024-11-05",
+        "capabilities": {},
+        "clientInfo": {
+            "name": "test-client",
+            "version": "1.0"
+        }
+    });
+
+    let log_params = serde_json::json!({
+        "level": "debug",
+        "message": "This is a debug message without logger"
+    });
+
+    let results = run_request_sequence(
+        None,
+        None,
+        vec![
+            ("initialize", Some(&init_params)),
+            ("logging/messages", Some(&log_params)),
+        ],
+    );
+
+    assert_eq!(results.len(), 2);
+    assert!(
+        results[1].get("result").is_some(),
+        "Expected result for logging/messages with debug level"
+    );
+}
+
+#[test]
+fn test_logging_messages_with_error_level() {
+    let init_params = serde_json::json!({
+        "protocolVersion": "2024-11-05",
+        "capabilities": {},
+        "clientInfo": {
+            "name": "test-client",
+            "version": "1.0"
+        }
+    });
+
+    let log_params = serde_json::json!({
+        "level": "error",
+        "logger": "error-logger",
+        "message": "This is an error message"
+    });
+
+    let results = run_request_sequence(
+        None,
+        None,
+        vec![
+            ("initialize", Some(&init_params)),
+            ("logging/messages", Some(&log_params)),
+        ],
+    );
+
+    assert_eq!(results.len(), 2);
+    assert!(
+        results[1].get("result").is_some(),
+        "Expected result for logging/messages with error level"
+    );
+}
+
+#[test]
+fn test_logging_messages_with_unknown_level() {
+    let init_params = serde_json::json!({
+        "protocolVersion": "2024-11-05",
+        "capabilities": {},
+        "clientInfo": {
+            "name": "test-client",
+            "version": "1.0"
+        }
+    });
+
+    let log_params = serde_json::json!({
+        "level": "unknown-level",
+        "message": "Message with unknown level"
+    });
+
+    let results = run_request_sequence(
+        None,
+        None,
+        vec![
+            ("initialize", Some(&init_params)),
+            ("logging/messages", Some(&log_params)),
+        ],
+    );
+
+    assert_eq!(results.len(), 2);
+    // Unknown levels should still succeed (logged as info)
+    assert!(
+        results[1].get("result").is_some(),
+        "Expected result for logging/messages with unknown level"
+    );
+}
+
+#[test]
+fn test_logging_messages_with_capabilities() {
+    // Initialize with logging capability enabled
+    let init_params = serde_json::json!({
+        "protocolVersion": "2024-11-05",
+        "capabilities": {},
+        "clientInfo": {
+            "name": "test-client",
+            "version": "1.0"
+        }
+    });
+
+    let results = run_request_sequence(
+        None,
+        None,
+        vec![
+            ("initialize", Some(&init_params)),
+            (
+                "logging/messages",
+                Some(&serde_json::json!({
+                    "level": "info",
+                    "message": "Test message after init with logging capability"
+                })),
+            ),
+        ],
+    );
+
+    assert_eq!(results.len(), 2);
+    assert!(
+        results[0].get("result").is_some(),
+        "Expected successful initialize"
+    );
+    assert!(
+        results[1].get("result").is_some(),
+        "Expected result for logging/messages when server has logging capability"
+    );
+}

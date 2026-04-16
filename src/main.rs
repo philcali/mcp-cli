@@ -24,6 +24,10 @@ struct Cli {
     #[arg(long, short)]
     prompts_dir: Option<std::path::PathBuf>,
 
+    /// Enable logging capability for the server
+    #[arg(long)]
+    with_logging: bool,
+
     /// Run as persistent stdio server (daemon mode)
     #[arg(long, short)]
     daemon: bool,
@@ -62,6 +66,11 @@ async fn main() -> Result<()> {
         info!("Using prompts directory: {:?}", pd);
         builder = builder.with_prompts();
         builder = builder.with_prompts_dir(pd.clone());
+    }
+
+    if cli.with_logging {
+        info!("Enabling logging capability");
+        builder = builder.with_logging();
     }
 
     let mut srv = builder.build();

@@ -20,6 +20,7 @@ pub async fn route_request(
         // We only reject requests if explicitly not initialized (initialize not yet called)
         _ if !initialized && method != "ping" => Err(anyhow::anyhow!("Server not initialized")),
         "initialized" => Ok(json!({})),
+        "logging/messages" => crate::handlers::handle_logging_messages(server, params).await,
         "ping" => Ok(json!({})),
         "roots/list" => server.handle_roots_list().await,
         "tools/list" => crate::handlers::handle_tools_list(server).await,
@@ -39,6 +40,7 @@ pub const KNOWN_METHODS: &[(&str, &str)] = &[
         "Initialize connection and negotiate capabilities",
     ),
     ("initialized", "Notification that client is initialized"),
+    ("logging/messages", "Send log message to server"),
     ("ping", "Ping request to check connectivity"),
     ("roots/list", "List root directories provided by client"),
     ("tools/list", "List available tools"),
