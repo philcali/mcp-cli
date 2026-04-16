@@ -182,7 +182,7 @@ Successfully refactored server.rs by extracting routing and handlers:
   - `prompts.rs`: Prompt listing and retrieval
   - All handlers use consistent signature: `async fn handle_XXX(&server, params) -> Result<Value>`
 
-- ✅ **Test coverage**: All 26 integration tests pass after refactoring
+- ✅ **Test coverage**: All 34 integration tests pass after refactoring
 
 **Current structure:**
 ```
@@ -209,7 +209,7 @@ src/
 
 ## Architectural Improvements
 
-### 7. Daemon Mode: Long-Running stdio Server
+### 9. Daemon Mode: Long-Running stdio Server
 **Status**: ✅ Completed
 
 Implemented long-running daemon mode for persistent stdio server:
@@ -238,7 +238,7 @@ mcp-cli --daemon --tools-dir ./tools --resources-dir ./resources
 
 **Integration tests**: Tests verify multi-request sequences and graceful shutdown.
 
-### 8. Protocol Version Support & Initialization Flow
+### 10. Protocol Version Support & Initialization Flow
 **Status**: ✅ Completed
 
 Implemented improved protocol version handling and initialization:
@@ -270,17 +270,48 @@ Implemented improved protocol version handling and initialization:
 
 ## Additional Features
 
-### 9. Logging Messages
-**Pending**: Implement `logging/messages` method
+### 11. Logging Messages
+**Status**: ✅ Completed
 
-Allow clients to send log messages to server for unified logging.
+Implemented `logging/messages` method to allow clients to send log messages to the server.
 
-### 10. Telemetry Events
+**What was done:**
+- Added protocol types: `LogLevel` enum, `LogMessageParams`, and `LogMessageResult`
+- Implemented handler in `src/handlers/logging.rs` with tracing integration
+- Supports all standard log levels: debug, info, notice, warning, error, critical, alert, emergency
+- Logs are sent to the tracing crate with optional logger names
+- Fallback behavior for unknown log levels
+
+**MCP spec method implemented:**
+- ✅ `logging/messages` - Send log message to server
+
+**Usage example:**
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "logging/messages",
+  "params": {
+    "level": "info",
+    "logger": "my-client",
+    "message": "Client started successfully"
+  }
+}
+```
+
+**Test coverage:**
+- `test_logging_messages_before_initialize` - Verifies method requires initialization
+- `test_logging_messages_with_info_level` - Tests info level logging
+- `test_logging_messages_with_debug_level` - Tests debug level logging
+- `test_logging_messages_with_error_level` - Tests error level logging
+- `test_logging_messages_with_unknown_level` - Tests fallback for unknown levels
+- `test_logging_messages_with_capabilities` - Tests with server capability enabled
+
+### 12. Telemetry Events
 **Pending**: Add `telemetry/event` support
 
 Send server metrics and usage data to clients.
 
-### 11. More MIME Types
+### 13. More MIME Types
 **Pending**: Extend supported MIME types in resources
 
 Add more file type detections:
@@ -289,7 +320,7 @@ Add more file type detections:
 - `.woff`, `.ttf` → font/* 
 - Various archive formats
 
-### 12. Tool Authentication
+### 14. Tool Authentication
 **Pending**: Improve authentication handling
 
 Currently has basic auth config loading, but:
@@ -299,20 +330,20 @@ Currently has basic auth config loading, but:
 
 ## Testing & Documentation
 
-### 13. Performance Benchmarks
+### 15. Performance Benchmarks
 **Pending**: Add benchmark tests for:
 - Large file resource reading
 - Many tools discovery
 - Concurrent requests (if persistent mode added)
 
-### 14. Example Tools Repository
+### 16. Example Tools Repository
 **Pending**: Create example tool scripts demonstrating:
 - Complex argument parsing
 - Multiple output content types (text, image blobs)
 - Error handling patterns
 - Auth integration examples
 
-### 15. Client SDK Examples  
+### 17. Client SDK Examples  
 **Pending**: Add client integration examples for:
 - TypeScript/JavaScript clients
 - Python clients

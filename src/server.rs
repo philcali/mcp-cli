@@ -143,6 +143,11 @@ impl McpServer {
         self
     }
 
+    pub fn enable_logging(mut self) -> Self {
+        self.capabilities.logging = Some(true);
+        self
+    }
+
     pub fn enable_prompts_dir(mut self, path: PathBuf) -> Self {
         // Clone the content to get a mutable copy
         let mut new_state = (*self.state).clone();
@@ -533,6 +538,7 @@ pub struct ServerBuilder {
     resources_dir: Option<std::path::PathBuf>,
     enable_prompts: bool,
     prompts_dir: Option<std::path::PathBuf>,
+    enable_logging: bool,
 }
 
 impl ServerBuilder {
@@ -547,6 +553,7 @@ impl ServerBuilder {
             resources_dir: None,
             enable_prompts: false,
             prompts_dir: None,
+            enable_logging: false,
         }
     }
     pub fn with_tools(mut self) -> Self {
@@ -568,6 +575,10 @@ impl ServerBuilder {
     }
     pub fn with_prompts(mut self) -> Self {
         self.enable_prompts = true;
+        self
+    }
+    pub fn with_logging(mut self) -> Self {
+        self.enable_logging = true;
         self
     }
     pub fn with_prompts_dir<P: Into<std::path::PathBuf>>(mut self, path: P) -> Self {
@@ -594,6 +605,9 @@ impl ServerBuilder {
         }
         if let Some(ref path) = self.prompts_dir {
             server = server.enable_prompts_dir(path.clone());
+        }
+        if self.enable_logging {
+            server = server.enable_logging();
         }
         server
     }
