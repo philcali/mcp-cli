@@ -850,7 +850,13 @@ impl PromptTemplateEngine {
         }
 
         let name: String = chars[start + 2..i].iter().collect();
-        Ok((name, i + 1))
+
+        // Skip the closing }}
+        if i + 1 < chars.len() && chars[i + 1] == '}' {
+            Ok((name, i + 2))
+        } else {
+            Ok((name, i + 1))
+        }
     }
 
     /// Execute a directive.
