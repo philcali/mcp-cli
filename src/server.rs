@@ -148,6 +148,14 @@ impl McpServer {
         self
     }
 
+    pub fn enable_telemetry(mut self) -> Self {
+        // Add telemetry capability to experimental features
+        let mut experimental = self.capabilities.experimental.clone().unwrap_or_default();
+        experimental.insert("telemetry".to_string(), json!(true));
+        self.capabilities.experimental = Some(experimental);
+        self
+    }
+
     pub fn enable_prompts_dir(mut self, path: PathBuf) -> Self {
         // Clone the content to get a mutable copy
         let mut new_state = (*self.state).clone();
@@ -539,6 +547,7 @@ pub struct ServerBuilder {
     enable_prompts: bool,
     prompts_dir: Option<std::path::PathBuf>,
     enable_logging: bool,
+    enable_telemetry: bool,
 }
 
 impl ServerBuilder {
@@ -554,6 +563,7 @@ impl ServerBuilder {
             enable_prompts: false,
             prompts_dir: None,
             enable_logging: false,
+            enable_telemetry: false,
         }
     }
     pub fn with_tools(mut self) -> Self {
@@ -579,6 +589,10 @@ impl ServerBuilder {
     }
     pub fn with_logging(mut self) -> Self {
         self.enable_logging = true;
+        self
+    }
+    pub fn with_telemetry(mut self) -> Self {
+        self.enable_telemetry = true;
         self
     }
     pub fn with_prompts_dir<P: Into<std::path::PathBuf>>(mut self, path: P) -> Self {
@@ -608,6 +622,9 @@ impl ServerBuilder {
         }
         if self.enable_logging {
             server = server.enable_logging();
+        }
+        if self.enable_telemetry {
+            server = server.enable_telemetry();
         }
         server
     }

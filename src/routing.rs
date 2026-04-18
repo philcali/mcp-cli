@@ -28,6 +28,7 @@ pub async fn route_request(
         "resources/read" => server.handle_resources_read(params).await,
         "prompts/list" => crate::handlers::handle_prompts_list(server).await,
         "prompts/get" => crate::handlers::handle_prompts_get(server, params).await,
+        "telemetry/event" => crate::handlers::handle_telemetry_event(server, params).await,
         "notifications/initialized" => Ok(json!({})),
         _ => Err(anyhow::anyhow!("Unknown method: {}", method)),
     }
@@ -51,6 +52,7 @@ pub const KNOWN_METHODS: &[(&str, &str)] = &[
     ("resources/unsubscribe", "Unsubscribe from resource changes"),
     ("prompts/list", "List available prompts"),
     ("prompts/get", "Get prompt with arguments"),
+    ("telemetry/event", "Send telemetry event to server"),
     (
         "notifications/initialized",
         "Notification: client initialized",
