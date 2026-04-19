@@ -15,6 +15,15 @@ pub struct JsonRpcRequest {
     pub id_value: serde_json::Value,
 }
 
+/// Base JSON-RPC 2.0 notification structure (no id).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JsonRpcNotification {
+    pub jsonrpc: String,
+    pub method: String,
+    #[serde(default)]
+    pub params: serde_json::Value,
+}
+
 /// Base JSON-RPC 2.0 response structure.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JsonRpcResponse {
@@ -237,6 +246,16 @@ pub struct CallToolParams {
     pub name: String,
     #[serde(default)]
     pub arguments: HashMap<String, serde_json::Value>,
+    /// Opt-in flag for streaming results
+    #[serde(default, rename = "stream")]
+    pub stream: bool,
+}
+
+impl CallToolParams {
+    /// Check if streaming was requested
+    pub fn is_streaming(&self) -> bool {
+        self.stream
+    }
 }
 
 /// Tool result structure.
@@ -289,6 +308,56 @@ impl Content {
             data: data.to_string(),
             mime_type: mime_type.to_string(),
         }
+    }
+}
+
+// ===========================================================================
+// STREAMING SUPPORT
+// ===========================================================================
+
+/// Stream chunk types for streaming tool/resource output.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum StreamChunk {
+    /// Initial metadata about the stream
+    Meta {
+        #[allow(dead_code)]
+        chunk_count: i64,
+        total_bytes: Option<usize>,
+    },
+    /// A chunk of content (text output)
+    Content {
+        data: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        is_error: Option<bool>,
+    },
+    /// Final marker indicating stream completion
+    Done { summary: Option<String> },
+}
+
+/// Tool call result with optional streaming ID.
+#[derive(Debug, Serialize)]
+pub struct StreamingCallResult {
+    pub content: Vec<Content>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_error: Option<bool>,
+    /// Stream identifier for receiving chunks
+    pub stream_id: String,
+}
+
+/// Read resource request parameters with optional streaming.
+#[derive(Debug, Deserialize)]
+pub struct ReadResourceParams {
+    pub uri: String,
+    /// Opt-in flag for streaming results
+    #[serde(default, rename = "stream")]
+    pub stream: bool,
+}
+
+impl ReadResourceParams {
+    /// Check if streaming was requested
+    pub fn is_streaming(&self) -> bool {
+        self.stream
     }
 }
 
@@ -460,6 +529,71 @@ impl ResourcesListChangedNotification {
             "jsonrpc": "2.0",
             "method": Self::METHOD_NAME,
         })
+    }
+}
+
+// ===========================================================================
+// STREAMING NOTIFICATIONS
+// ===========================================================================
+
+/// Streaming output chunk notification from server to client.
+#[derive(Debug, Serialize)]
+pub struct StreamChunkNotification {
+    #[serde(rename = "method")]
+    pub method_value: String,
+    #[serde(rename = "jsonrpc")]
+    pub jsonrpc_version: String,
+    pub params: StreamChunkParams,
+}
+
+/// Parameters for streaming chunk notifications.
+#[derive(Debug, Serialize)]
+pub struct StreamChunkParams {
+    pub request_id: String,
+    pub chunk: StreamChunk,
+}
+
+impl StreamChunkNotification {
+    /// Create a content chunk notification
+    pub fn content(request_id: &str, data: &str) -> Self {
+        Self {
+            method_value: "tools/stream".to_string(),
+            jsonrpc_version: "2.0".to_string(),
+            params: StreamChunkParams {
+                request_id: request_id.to_string(),
+                chunk: StreamChunk::Content {
+                    data: data.to_string(),
+                    is_error: None,
+                },
+            },
+        }
+    }
+
+    /// Create a meta/chunk count notification
+    pub fn meta(request_id: &str, total_bytes: Option<usize>) -> Self {
+        Self {
+            method_value: "tools/stream".to_string(),
+            jsonrpc_version: "2.0".to_string(),
+            params: StreamChunkParams {
+                request_id: request_id.to_string(),
+                chunk: StreamChunk::Meta {
+                    chunk_count: -1, // unknown for streaming
+                    total_bytes,
+                },
+            },
+        }
+    }
+
+    /// Create a done notification
+    pub fn done(request_id: &str) -> Self {
+        Self {
+            method_value: "tools/stream".to_string(),
+            jsonrpc_version: "2.0".to_string(),
+            params: StreamChunkParams {
+                request_id: request_id.to_string(),
+                chunk: StreamChunk::Done { summary: None },
+            },
+        }
     }
 }
 

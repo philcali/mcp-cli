@@ -29,11 +29,60 @@ Added support for additional MCP protocol endpoints:
 - `ToolsListChangedNotification` for subscription-based updates
 
 ### 3. Streaming Support
-**Pending**: Add progress notifications and result streaming for long-running operations
+**Status**: ✅ Completed
 
-MCP supports:
-- `progress` notifications for long-running requests
-- Result streaming via SSE or similar mechanisms
+Implemented streaming support for `tools/call` and `resources/read` methods using JSON-RPC notifications.
+
+**What was done:**
+- Added `stream: bool` parameter to tool call and resource read requests
+- When enabled, server immediately returns acknowledgment with `stream_id`
+- Server sends output chunks as notifications: `{"jsonrpc":"2.0","method":"tools/stream","params":{...}}`
+- Final `done` chunk signals stream completion
+
+**Supported methods with streaming:**
+- `tools/call?stream=true` - Tool output streamed line-by-line
+- `resources/read?stream=true` - File contents streamed line-by-line
+
+**Usage example (tool):**
+```json
+// Client requests streaming:
+{
+  "jsonrpc": "2.0",
+  "method": "tools/call",
+  "params": {
+    "name": "my-tool",
+    "arguments": {"key": "value"},
+    "stream": true
+  },
+  "id": "req-123"
+}
+
+// Server responds immediately:
+{
+  "jsonrpc": "2.0",
+  "result": {
+    "content": [],
+    "is_error": false,
+    "stream_id": "stream_my-tool_..."
+  },
+  "id": "req-123"
+}
+
+// Followed by streaming chunks (notifications from server):
+{
+  "jsonrpc": "2.0",
+  "method": "tools/stream",
+  "params": {
+    "request_id": "req-123",
+    "chunk": {"type": "content", "data": "first line\n"}
+  }
+}
+```
+
+**Implementation details:**
+- Uses `tokio::sync::broadcast` for notification channel
+- Background task polls channel and sends to stdout
+- Line-by-line streaming avoids buffering large outputs
 
 ### 4. Prompt Caching/Invalidation  
 **Status**: ✅ Completed
@@ -77,7 +126,7 @@ server.invalidate_prompt_cache()?;
 ### 5. Resource Subscriptions
 **Status**: ✅ Completed
 
-Implemented full subscription support for MCP resources.
+Implemented full subscription support for MCP resources using an in-memory manager.
 
 **What was done:**
 - Added protocol types: `SubscribeResourceParams`, `UnsubscribeResourceParams`
@@ -91,7 +140,6 @@ Implemented full subscription support for MCP resources.
 **MCP spec methods implemented:**
 - ✅ `resources/subscribe` - Subscribe to resource change notifications
 - ✅ `resources/unsubscribe` - Unsubscribe from changes
-- ⏳ `resources/listChanged` - Notification when list changes (not yet needed)
 
 **Test coverage:**
 Added 5 comprehensive integration tests:
@@ -100,9 +148,6 @@ Added 5 comprehensive integration tests:
 - `test_resources_unsubscribe_valid_resource` – Unsubscribe flow
 - `test_resources_unsubscribe_nonexistent_resource` – Error handling
 - `test_resources_subscribe_and_read` – Combined workflow (subscribe then read)
-
-**Notes:**
-The subscription manager is currently a simple in-memory store. For more complex use cases, this could be extended to support file watching or persistent subscriptions.
 
 ### 6. Tool Execution Improvements
 **Status**: ✅ Completed
@@ -138,10 +183,10 @@ All existing tests pass. Timeout and stderr separation verified through integrat
 ### 7. Unified File System Watcher
 **Status**: ✅ Completed
 
-Created unified file system watcher module that provides shared infrastructure for watching tools, prompts, and resources directories:
+Created unified file system watcher module that provides shared infrastructure for watching tools, prompts, and resources directories.
 
 **What was done:**
-- **New `src/watcher.rs` module**: Centralized file watching abstraction using `notify` crate
+- **`src/watcher.rs` module**: Centralized file watching abstraction using `notify` crate
   - `FileSystemWatcher` trait with consistent interface across all resource types
   - `WatchConfig` configuration struct for enabling/disabling watchers
   - Separate `PromptWatcher` and `ToolWatcher` implementations
@@ -166,50 +211,65 @@ let prompt_handle = server.start_prompt_watcher()?;
 Watchers verified through integration testing. Cache invalidation triggers on file changes.
 
 ### 8. Server Monolith Refactor & Modularization
-**Status**: 🟡 In Progress (Steps 1-2 Complete)
+**Status**: ✅ Completed
 
-Successfully refactored server.rs by extracting routing and handlers:
+Refactored server.rs into a modular architecture with clear separation of concerns:
 
-**Completed:**
-- ✅ **Routing module** (`src/routing.rs`): Centralized request routing with explicit method→handler mapping
+**What was done:**
+- **Routing module** (`src/routing.rs`): Centralized request routing with explicit method→handler mapping
   - `route_request()` function delegates to handler modules
-  - Added `KNOWN_METHODS` constant for introspection
+  - `KNOWN_METHODS` constant for introspection and documentation
   
-- ✅ **Handler modules** (in `src/handlers/`):
+- **Handler modules** (in `src/handlers/`):
   - `init.rs`: Initialize connection and capability negotiation
   - `tools.rs`: Tool listing and execution
   - `resources.rs`: Resource CRUD and subscriptions
   - `prompts.rs`: Prompt listing and retrieval
-  - All handlers use consistent signature: `async fn handle_XXX(&server, params) -> Result<Value>`
-
-- ✅ **Test coverage**: All 34 integration tests pass after refactoring
+  - `logging.rs`: Logging message handling
+  - `telemetry.rs`: Telemetry event handling
+  
+- **ServerState** (`src/state.rs`): Clean state management struct with:
+  - Thread-safe cached collections (tools, resources, prompts)
+  - Roots list management
+  - Subscription manager reference
+  - Initialization flag
+  
+- **Discovery module** (`src/discovery/`): Extracted discovery logic for tools, resources, and prompts
+  - `discover_tools()`, `discover_resources()`, `discover_prompts()` functions
+  
+- **Auth module** (`src/auth/`): Credential resolution and validation
+  - `.auth.json` loading from tool directories
+  - Environment variable validation and injection
 
 **Current structure:**
 ```
 src/
 ├── lib.rs              # Module declarations
 ├── main.rs             # CLI entry point
-├── server.rs           # McpServer, ServerBuilder (still ~600 lines)
+├── server.rs           # McpServer, ServerBuilder (~400 lines)
+├── state.rs            # ✅ ServerState struct
 ├── routing.rs          # ✅ Request routing module
-├── handlers/
-│   ├── init.rs         # ✅ Initialize handler
-│   ├── tools.rs        # ✅ Tools handlers
-│   ├── resources.rs    # ✅ Resources handlers
-│   └── prompts.rs      # ✅ Prompts handlers
+├── handlers/           # ✅ All handler modules
+│   ├── init.rs
+│   ├── tools.rs
+│   ├── resources.rs
+│   ├── prompts.rs
+│   ├── logging.rs
+│   └── telemetry.rs
+├── discovery/          # ✅ Discovery logic
+│   ├── mod.rs
+│   ├── tools.rs
+│   ├── resources.rs
+│   └── prompts.rs
+├── auth/               # ✅ Auth module
+│   └── mod.rs
 ├── protocol.rs         # MCP protocol types
 └── watcher.rs          # File system watchers
 ```
 
-**Remaining work:**
-1. ⏳ Move discovery logic (`load_tools`, `load_resources`, `load_prompts`) to separate module
-2. ⏳ Introduce `ServerState` struct for clean state management
-3. ⏳ Create dedicated auth module (currently in server.rs)
-
-**Quick win completed**: Extracted routing with explicit method→handler documentation.
-
 ## Architectural Improvements
 
-### 9. Daemon Mode: Long-Running stdio Server
+### 13. Daemon Mode: Long-Running stdio Server
 **Status**: ✅ Completed
 
 Implemented long-running daemon mode for persistent stdio server:
@@ -238,7 +298,7 @@ mcp-cli --daemon --tools-dir ./tools --resources-dir ./resources
 
 **Integration tests**: Tests verify multi-request sequences and graceful shutdown.
 
-### 10. Protocol Version Support & Initialization Flow
+### 14. Protocol Version Support & Initialization Flow
 **Status**: ✅ Completed
 
 Implemented improved protocol version handling and initialization:
@@ -270,7 +330,7 @@ Implemented improved protocol version handling and initialization:
 
 ## Additional Features
 
-### 11. Logging Messages
+### 15. Logging Messages
 **Status**: ✅ Completed
 
 Implemented `logging/messages` method to allow clients to send log messages to the server.
@@ -306,13 +366,35 @@ Implemented `logging/messages` method to allow clients to send log messages to t
 - `test_logging_messages_with_unknown_level` - Tests fallback for unknown levels
 - `test_logging_messages_with_capabilities` - Tests with server capability enabled
 
-### 12. Telemetry Events
-**Pending**: Add `telemetry/event` support
+### 16. Telemetry Events
+**Status**: ✅ Completed
 
-Send server metrics and usage data to clients.
+Implemented `telemetry/event` method for sending telemetry from clients to the server.
 
-### 13. More MIME Types
-**Pending**: Extend supported MIME types in resources
+**What was done:**
+- Added handler in `src/handlers/telemetry.rs`
+- Telemetry events logged at debug level via tracing
+- Server capability enabled via `enable_telemetry()`
+
+**MCP spec method implemented:**
+- ✅ `telemetry/event` - Send telemetry event to server
+
+**Usage example:**
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "telemetry/event",
+  "params": {
+    "eventName": "client.action",
+    "data": {"key": "value"}
+  }
+}
+```
+
+### 19. More MIME Types
+**Status**: ⏳ Pending
+
+Extend supported MIME types in resources.
 
 Add more file type detections:
 - `.pdf` → application/pdf
@@ -320,8 +402,10 @@ Add more file type detections:
 - `.woff`, `.ttf` → font/* 
 - Various archive formats
 
-### 14. Tool Authentication
-**Pending**: Improve authentication handling
+### 20. Tool Authentication
+**Status**: ⏳ Pending
+
+Improve authentication handling.
 
 Currently has basic auth config loading, but:
 - Support OAuth flows
@@ -330,21 +414,27 @@ Currently has basic auth config loading, but:
 
 ## Testing & Documentation
 
-### 15. Performance Benchmarks
-**Pending**: Add benchmark tests for:
+### 21. Performance Benchmarks
+**Status**: ⏳ Pending
+
+Add benchmark tests for:
 - Large file resource reading
 - Many tools discovery
 - Concurrent requests (if persistent mode added)
 
-### 16. Example Tools Repository
-**Pending**: Create example tool scripts demonstrating:
+### 22. Example Tools Repository
+**Status**: ⏳ Pending
+
+Create example tool scripts demonstrating:
 - Complex argument parsing
 - Multiple output content types (text, image blobs)
 - Error handling patterns
 - Auth integration examples
 
-### 17. Client SDK Examples  
-**Pending**: Add client integration examples for:
+### 23. Client SDK Examples  
+**Status**: ⏳ Pending
+
+Add client integration examples for:
 - TypeScript/JavaScript clients
 - Python clients
 - Shell script wrappers
