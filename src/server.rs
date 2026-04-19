@@ -9,6 +9,8 @@ use crate::watcher::{FileSystemWatcher, WatchConfig};
 use anyhow::{Context, Result};
 use serde_json::json;
 use std::path::PathBuf;
+use std::sync::Arc;
+
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tracing::{debug, error, info, warn};
 
@@ -42,11 +44,15 @@ impl Default for PromptCacheConfig {
     }
 }
 
+use tokio::sync::broadcast;
+
 /// Server state and configuration.
 pub struct McpServer {
     pub state: std::sync::Arc<crate::state::ServerState>,
     pub capabilities: ServerCapabilities,
     pub prompt_cache_config: PromptCacheConfig,
+    /// Broadcast channel for streaming notifications to clients
+    pub notification_tx: Option<std::sync::Arc<broadcast::Sender<String>>>,
 }
 
 impl Default for McpServer {
@@ -58,11 +64,26 @@ impl Default for McpServer {
 impl McpServer {
     pub fn new(name: &str, version: &str) -> Self {
         let state = std::sync::Arc::new(crate::state::ServerState::new(name, version));
+        // Create notification channel for streaming support
+        let (notification_tx, _) = broadcast::channel(100);
 
         Self {
             state,
             capabilities: ServerCapabilities::new(),
             prompt_cache_config: PromptCacheConfig::default(),
+            notification_tx: Some(std::sync::Arc::new(notification_tx)),
+        }
+    }
+
+    /// Send a notification to all subscribed clients (for streaming)
+    pub async fn send_notification(&self, method: &str, params: serde_json::Value) {
+        if let Some(ref tx) = self.notification_tx {
+            let msg = json!({
+                "jsonrpc": "2.0",
+                "method": method,
+                "params": params
+            });
+            let _ = tx.send(msg.to_string());
         }
     }
 
@@ -224,8 +245,32 @@ impl McpServer {
         )
     }
 
+    /// Start background task that sends notifications from the broadcast channel to stdout.
+    fn start_notification_sender(
+        notification_tx: std::sync::Arc<broadcast::Sender<String>>,
+    ) -> tokio::task::JoinHandle<()> {
+        let mut rx = notification_tx.subscribe();
+
+        tokio::spawn(async move {
+            while let Ok(msg) = rx.recv().await {
+                if let Err(e) = tokio::io::stdout()
+                    .write_all(format!("{}\n", msg).as_bytes())
+                    .await
+                {
+                    error!("Failed to send notification: {}", e);
+                }
+            }
+        })
+    }
+
     /// Run in one-shot mode: process stdin until EOF, then exit.
     pub async fn run(&mut self) -> Result<()> {
+        // Start notification sender background task if we have a channel
+        let _notification_handle = self
+            .notification_tx
+            .as_ref()
+            .map(|tx| Self::start_notification_sender(Arc::clone(tx)));
+
         let stdin = tokio::io::stdin();
         let mut reader = BufReader::new(stdin).lines();
         info!("MCP server starting, waiting for messages...");
@@ -282,6 +327,12 @@ impl McpServer {
     /// Run in daemon mode with graceful shutdown support.
     /// Blocks until SIGINT or SIGTERM is received.
     pub async fn run_daemon(&mut self) -> Result<()> {
+        // Start notification sender background task if we have a channel
+        let _notification_handle = self
+            .notification_tx
+            .as_ref()
+            .map(|tx| Self::start_notification_sender(Arc::clone(tx)));
+
         // Set up signal handlers for Unix platforms
         #[cfg(unix)]
         {
