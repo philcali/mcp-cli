@@ -226,6 +226,29 @@ fn test_ping_before_initialize() {
     assert_eq!(response["jsonrpc"], "2.0");
     assert_eq!(response.get("error"), None);
     assert_eq!(response["id"], serde_json::Value::Number(1.into()));
+    assert_eq!(response["result"]["initialized"], false);
+    assert_eq!(response["result"]["server_info"]["name"], "mcp-cli");
+    assert!(response["result"]["capabilities"].get("tools").is_some());
+}
+
+#[test]
+fn test_ping_after_initialize() {
+    let results = run_request_sequence_daemon(vec![
+        (
+            "initialize",
+            Some(&serde_json::json!({
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": { "name": "test-client", "version": "1.0" }
+            })),
+        ),
+        ("ping", None),
+    ]);
+
+    let ping_response = &results[1];
+    assert_eq!(ping_response["jsonrpc"], "2.0");
+    assert_eq!(ping_response["result"]["initialized"], true);
+    assert_eq!(ping_response["result"]["server_info"]["name"], "mcp-cli");
 }
 
 #[test]

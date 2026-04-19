@@ -330,7 +330,18 @@ Implemented improved protocol version handling and initialization:
 
 ## Additional Features
 
-### 15. Logging Messages
+### 15. Enhanced Health Check (ping)
+**Status**: ✅ Completed
+
+Enhanced the `ping` method from a simple connectivity check to a proper health check endpoint.
+
+**What was done:**
+- Added `src/handlers/ping.rs` with `handle_ping()` function
+- Returns `{ initialized, server_info: { name, version }, capabilities: { tools, resources, prompts, logging, roots } }`
+- Allows clients to verify server is alive and understand its configuration
+- `ping` still works before initialization (for health monitoring)
+
+### 17. Logging Messages
 **Status**: ✅ Completed
 
 Implemented `logging/messages` method to allow clients to send log messages to the server.
@@ -392,29 +403,25 @@ Implemented `telemetry/event` method for sending telemetry from clients to the s
 ```
 
 ### 19. More MIME Types
+**Status**: ✅ Completed
+
+Extended `mime_from_extension()` in `src/discovery/resources.rs` to cover:
+- PDF (`application/pdf`)
+- Images (`image/png`, `image/jpeg`, `image/gif`, `image/webp`, `image/svg+xml`, `image/x-icon`)
+- Fonts (`font/woff`, `font/woff2`, `font/ttf`, `font/otf`, `application/vnd.ms-fontobject`)
+- Archives (`application/zip`, `application/x-tar`, `application/gzip`, `application/x-bzip2`, `application/x-xz`, `application/x-7z-compressed`, `application/vnd.rar`)
+
+### 21. Tool Authentication
 **Status**: ⏳ Pending
 
-Extend supported MIME types in resources.
-
-Add more file type detections:
-- `.pdf` → application/pdf
-- `.png`, `.jpg`, `.gif` → image/* (blob support)
-- `.woff`, `.ttf` → font/* 
-- Various archive formats
-
-### 20. Tool Authentication
-**Status**: ⏳ Pending
-
-Improve authentication handling.
-
-Currently has basic auth config loading, but:
-- Support OAuth flows
+Currently has basic auth config loading (`.auth.json`), but needs:
+- OAuth2 token flow implementation
 - Better credential injection into tool environment
 - Environment variable validation and masking
 
 ## Testing & Documentation
 
-### 21. Performance Benchmarks
+### 22. Performance Benchmarks
 **Status**: ⏳ Pending
 
 Add benchmark tests for:
@@ -422,7 +429,7 @@ Add benchmark tests for:
 - Many tools discovery
 - Concurrent requests (if persistent mode added)
 
-### 22. Example Tools Repository
+### 23. Example Tools Repository
 **Status**: ⏳ Pending
 
 Create example tool scripts demonstrating:
@@ -431,7 +438,7 @@ Create example tool scripts demonstrating:
 - Error handling patterns
 - Auth integration examples
 
-### 23. Client SDK Examples  
+### 24. Client SDK Examples
 **Status**: ⏳ Pending
 
 Add client integration examples for:
@@ -448,4 +455,5 @@ Add client integration examples for:
 - Custom error codes per tool
 - Plugin system for extensibility
 - Health check endpoint
+  - Implemented in `src/handlers/ping.rs`: returns `initialized`, `server_info`, and `capabilities`
 - Graceful shutdown handling
