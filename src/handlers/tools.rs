@@ -55,10 +55,10 @@ pub async fn handle_tools_call(
         }
     };
 
-    if let Some(ref _config) = auth_config
+    let creds = if let Some(ref _config) = auth_config
         && let Some(ref tools_dir) = server.state.tools_dir
     {
-        match crate::auth::resolve_credentials(tools_dir, &call_params.name) {
+        match crate::auth::resolve_credentials(tools_dir, &call_params.name).await {
             Ok(creds) => {
                 debug!(
                     "Resolved {} credential(s) for tool '{}'",
@@ -68,10 +68,11 @@ pub async fn handle_tools_call(
 
                 if !creds.is_empty() {
                     info!(
-                        "Credentials validated successfully for tool '{}'",
+                        "Credentials resolved successfully for tool '{}'",
                         call_params.name
                     );
                 }
+                creds
             }
             Err(e) => {
                 return Err(anyhow::anyhow!(
@@ -81,7 +82,9 @@ pub async fn handle_tools_call(
                 ));
             }
         }
-    }
+    } else {
+        std::collections::HashMap::new()
+    };
 
     let input = json!({
         "name": call_params.name,
@@ -93,7 +96,11 @@ pub async fn handle_tools_call(
         script_path, input
     );
 
-    let mut child = tokio::process::Command::new(&script_path)
+    let mut cmd = tokio::process::Command::new(&script_path);
+    for (k, v) in &creds {
+        cmd.env(k, v);
+    }
+    let mut child = cmd
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -198,7 +205,7 @@ pub async fn handle_tools_call_streaming(
     server: &crate::server::McpServer,
     call_params: &CallToolParams,
 ) -> Result<serde_json::Value> {
-    let (script_path, _auth_config) = {
+    let (script_path, auth_config) = {
         let cached = server.state.cached_tools.lock().unwrap();
         if let Some(tool) = cached.get(&call_params.name) {
             (tool.script_path.clone(), tool.auth_config.clone())
@@ -211,6 +218,23 @@ pub async fn handle_tools_call_streaming(
                 None => return Err(anyhow::anyhow!("Tool '{}' not found", call_params.name)),
             }
         }
+    };
+
+    let creds = if let Some(ref _config) = auth_config
+        && let Some(ref tools_dir) = server.state.tools_dir
+    {
+        match crate::auth::resolve_credentials(tools_dir, &call_params.name).await {
+            Ok(creds) => creds,
+            Err(e) => {
+                return Err(anyhow::anyhow!(
+                    "Credential resolution failed for tool '{}': {}",
+                    call_params.name,
+                    e
+                ));
+            }
+        }
+    } else {
+        std::collections::HashMap::new()
     };
 
     // Generate a stream ID
@@ -226,7 +250,11 @@ pub async fn handle_tools_call_streaming(
     );
 
     // Spawn the tool process
-    let mut child = tokio::process::Command::new(&script_path)
+    let mut cmd = tokio::process::Command::new(&script_path);
+    for (k, v) in &creds {
+        cmd.env(k, v);
+    }
+    let mut child = cmd
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())

@@ -130,7 +130,7 @@ impl ServerState {
         tool_name: &str,
     ) -> Result<std::collections::HashMap<String, String>, anyhow::Error> {
         match &self.tools_dir {
-            Some(tools_dir) => auth::resolve_credentials(tools_dir, tool_name),
+            Some(tools_dir) => auth::resolve_credentials(tools_dir, tool_name).await,
             None => Ok(std::collections::HashMap::new()),
         }
     }
