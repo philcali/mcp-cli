@@ -41,6 +41,7 @@ async fn main() -> Result<()> {
         .with_span_events(FmtSpan::NONE)
         .with_target(false)
         .without_time()
+        .with_writer(std::io::stderr)
         .init();
 
     let cli = Cli::parse();

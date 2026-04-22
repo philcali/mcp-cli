@@ -32,6 +32,15 @@ pub fn discover_tools(tools_dir: &Path) -> Result<HashMap<String, ToolDefinition
             continue;
         }
 
+        // Skip auth config files (e.g., my-tool.auth.json)
+        if path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.ends_with(".auth.json"))
+        {
+            continue;
+        }
+
         let metadata = match std::fs::metadata(&path) {
             Ok(m) => m,
             Err(e) => {
