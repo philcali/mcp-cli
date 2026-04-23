@@ -53,6 +53,9 @@ pub struct McpServer {
     pub prompt_cache_config: PromptCacheConfig,
     /// Broadcast channel for streaming notifications to clients
     pub notification_tx: Option<std::sync::Arc<broadcast::Sender<String>>>,
+    /// Cached stdout handle to avoid repeated tokio::io::stdout() calls
+    /// which can cause broken pipe errors in subprocess contexts.
+    pub(crate) stdout: Option<std::sync::Arc<tokio::sync::Mutex<tokio::io::Stdout>>>,
 }
 
 impl Default for McpServer {
@@ -66,12 +69,17 @@ impl McpServer {
         let state = std::sync::Arc::new(crate::state::ServerState::new(name, version));
         // Create notification channel for streaming support
         let (notification_tx, _) = broadcast::channel(100);
+        // Cache stdout handle to avoid broken pipe errors in subprocess contexts
+        let stdout = Some(std::sync::Arc::new(tokio::sync::Mutex::new(
+            tokio::io::stdout(),
+        )));
 
         Self {
             state,
             capabilities: ServerCapabilities::new(),
             prompt_cache_config: PromptCacheConfig::default(),
             notification_tx: Some(std::sync::Arc::new(notification_tx)),
+            stdout,
         }
     }
 
@@ -248,15 +256,14 @@ impl McpServer {
     /// Start background task that sends notifications from the broadcast channel to stdout.
     fn start_notification_sender(
         notification_tx: std::sync::Arc<broadcast::Sender<String>>,
+        stdout: std::sync::Arc<tokio::sync::Mutex<tokio::io::Stdout>>,
     ) -> tokio::task::JoinHandle<()> {
         let mut rx = notification_tx.subscribe();
 
         tokio::spawn(async move {
             while let Ok(msg) = rx.recv().await {
-                if let Err(e) = tokio::io::stdout()
-                    .write_all(format!("{}\n", msg).as_bytes())
-                    .await
-                {
+                let mut out = stdout.lock().await;
+                if let Err(e) = out.write_all(format!("{}\n", msg).as_bytes()).await {
                     error!("Failed to send notification: {}", e);
                 }
             }
@@ -266,14 +273,18 @@ impl McpServer {
     /// Run in one-shot mode: process stdin until EOF, then exit.
     pub async fn run(&mut self) -> Result<()> {
         // Start notification sender background task if we have a channel
-        let _notification_handle = self
-            .notification_tx
-            .as_ref()
-            .map(|tx| Self::start_notification_sender(Arc::clone(tx)));
+        let _notification_handle = self.notification_tx.as_ref().and_then(|tx| {
+            self.stdout
+                .as_ref()
+                .map(|stdout| Self::start_notification_sender(Arc::clone(tx), Arc::clone(stdout)))
+        });
 
         let stdin = tokio::io::stdin();
         let mut reader = BufReader::new(stdin).lines();
         info!("MCP server starting, waiting for messages...");
+
+        // Use cached stdout handle to avoid broken pipe errors
+        let stdout = self.stdout.as_ref().unwrap().clone();
 
         loop {
             match reader.next_line().await {
@@ -291,10 +302,9 @@ impl McpServer {
                         .await
                     {
                         Ok(response) => {
-                            let _ = tokio::io::stdout()
-                                .write_all(format!("{}\n", response).as_bytes())
-                                .await;
-                            let _ = tokio::io::stdout().flush().await;
+                            let mut out = stdout.lock().await;
+                            let _ = out.write_all(format!("{}\n", response).as_bytes()).await;
+                            let _ = out.flush().await;
                             if !self.state.is_initialized() && is_initialize {
                                 self.state.set_initialized();
                             }
@@ -302,7 +312,8 @@ impl McpServer {
                         Err(e) => {
                             error!("Error processing message: {}", e);
                             let err_resp = json!({ "jsonrpc": "2.0", "error": JsonRpcError::internal_error(&e.to_string()), "id": null });
-                            let _ = tokio::io::stdout()
+                            let mut out = stdout.lock().await;
+                            let _ = out
                                 .write_all(
                                     format!("{}\n", serde_json::to_string(&err_resp).unwrap())
                                         .as_bytes(),
@@ -328,10 +339,11 @@ impl McpServer {
     /// Blocks until SIGINT or SIGTERM is received.
     pub async fn run_daemon(&mut self) -> Result<()> {
         // Start notification sender background task if we have a channel
-        let _notification_handle = self
-            .notification_tx
-            .as_ref()
-            .map(|tx| Self::start_notification_sender(Arc::clone(tx)));
+        let _notification_handle = self.notification_tx.as_ref().and_then(|tx| {
+            self.stdout
+                .as_ref()
+                .map(|stdout| Self::start_notification_sender(Arc::clone(tx), Arc::clone(stdout)))
+        });
 
         // Set up signal handlers for Unix platforms
         #[cfg(unix)]
@@ -341,12 +353,15 @@ impl McpServer {
             let mut term_signal = signal(SignalKind::terminate())?;
             let mut int_signal = signal(SignalKind::interrupt())?;
 
+            // Pass cached stdout to stdin loop
+            let stdout = self.stdout.as_ref().unwrap().clone();
+
             info!("Daemon mode: waiting for SIGINT or SIGTERM...");
 
             loop {
                 tokio::select! {
                     // Process stdin loop
-                    result = self.stdin_loop_daemon() => {
+                    result = self.stdin_loop_daemon(&stdout) => {
                         if let Err(e) = result {
                             error!("stdin loop error: {}", e);
                         }
@@ -368,7 +383,10 @@ impl McpServer {
     }
 
     /// Internal stdin loop for daemon mode - processes lines until EOF.
-    async fn stdin_loop_daemon(&mut self) -> Result<()> {
+    async fn stdin_loop_daemon(
+        &mut self,
+        stdout: &std::sync::Arc<tokio::sync::Mutex<tokio::io::Stdout>>,
+    ) -> Result<()> {
         let stdin = tokio::io::stdin();
         let mut reader = BufReader::new(stdin).lines();
         info!("Daemon mode: waiting for messages...");
@@ -389,10 +407,9 @@ impl McpServer {
                         .await
                     {
                         Ok(response) => {
-                            let _ = tokio::io::stdout()
-                                .write_all(format!("{}\n", response).as_bytes())
-                                .await;
-                            let _ = tokio::io::stdout().flush().await;
+                            let mut out = stdout.lock().await;
+                            let _ = out.write_all(format!("{}\n", response).as_bytes()).await;
+                            let _ = out.flush().await;
                             if !self.state.is_initialized() && is_initialize {
                                 self.state.set_initialized();
                             }
@@ -400,7 +417,8 @@ impl McpServer {
                         Err(e) => {
                             error!("Error processing message: {}", e);
                             let err_resp = json!({ "jsonrpc": "2.0", "error": JsonRpcError::internal_error(&e.to_string()), "id": null });
-                            let _ = tokio::io::stdout()
+                            let mut out = stdout.lock().await;
+                            let _ = out
                                 .write_all(
                                     format!("{}\n", serde_json::to_string(&err_resp).unwrap())
                                         .as_bytes(),

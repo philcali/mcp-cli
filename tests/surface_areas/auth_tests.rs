@@ -1,32 +1,12 @@
 //! Integration tests for tool authentication strategies.
 
-use mcp_cli::auth::token_cache::TokenCache;
 use mcp_cli::auth::api_key;
 use mcp_cli::auth::bearer;
-use mcp_cli::protocol::{AuthStrategy, OAuthConfig, ToolAuthConfig};
+use mcp_cli::auth::token_cache::TokenCache;
+use mcp_cli::protocol::{AuthStrategy, ToolAuthConfig};
 use tempfile::TempDir;
 
 use crate::common::run_request_sequence_all;
-
-fn make_env_config(env_vars: Vec<&str>) -> ToolAuthConfig {
-    ToolAuthConfig {
-        strategy: AuthStrategy::EnvVar,
-        required_env_vars: env_vars.into_iter().map(String::from).collect(),
-        oauth_config: None,
-    }
-}
-
-fn make_oauth_config(client_id_env: &str, token_url: &str) -> ToolAuthConfig {
-    ToolAuthConfig {
-        strategy: AuthStrategy::OAuth2,
-        required_env_vars: vec!["OAUTH_CLIENT_SECRET".to_string()],
-        oauth_config: Some(OAuthConfig {
-            client_id_env: client_id_env.to_string(),
-            token_url: token_url.to_string(),
-            scopes: vec![],
-        }),
-    }
-}
 
 fn make_api_key_config(env_var: &str) -> ToolAuthConfig {
     ToolAuthConfig {
@@ -42,6 +22,18 @@ fn make_bearer_config(env_var: &str) -> ToolAuthConfig {
         required_env_vars: vec![env_var.to_string()],
         oauth_config: None,
     }
+}
+
+/// Generate a unique env var name per test to avoid cross-test pollution.
+fn unique_env_var(prefix: &str) -> String {
+    format!(
+        "MCP_CLI_TEST_{}_{}",
+        prefix,
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
+    )
 }
 
 // ===========================================================================
@@ -64,27 +56,9 @@ fn test_token_cache_expired() {
 }
 
 #[test]
-fn test_api_key_resolve_success() {
-    unsafe { std::env::set_var("MY_API_KEY", "key123"); }
-    let config = make_api_key_config("MY_API_KEY");
-    let result = api_key::resolve(&config).unwrap();
-    assert_eq!(result.get("API_KEY"), Some(&"key123".to_string()));
-    unsafe { std::env::remove_var("MY_API_KEY"); }
-}
-
-#[test]
 fn test_api_key_resolve_missing() {
     let config = make_api_key_config("NONEXISTENT_KEY_XYZ");
     assert!(api_key::resolve(&config).is_err());
-}
-
-#[test]
-fn test_bearer_resolve_success() {
-    unsafe { std::env::set_var("MY_TOKEN", "bearer_val"); }
-    let config = make_bearer_config("MY_TOKEN");
-    let result = bearer::resolve(&config).unwrap();
-    assert_eq!(result.get("BEARER_TOKEN"), Some(&"bearer_val".to_string()));
-    unsafe { std::env::remove_var("MY_TOKEN"); }
 }
 
 #[test]
@@ -109,11 +83,13 @@ fn setup_tool_with_auth(tool_name: &str, auth_content: &str, output_var: &str) -
     std::fs::write(
         &tool_path,
         format!("#!/bin/bash\necho \"{output_var}=${{{output_var}}}\"\n"),
-    ).unwrap();
+    )
+    .unwrap();
     std::fs::set_permissions(
         &tool_path,
         std::os::unix::fs::PermissionsExt::from_mode(0o755),
-    ).unwrap();
+    )
+    .unwrap();
 
     temp_dir
 }
@@ -127,28 +103,25 @@ fn setup_tool_with_auth_no_exec(tool_name: &str, auth_content: &str) -> TempDir 
 
     // Create a tool script that is NOT executable so it won't be discovered
     let tool_path = temp_dir.path().join(tool_name);
-    std::fs::write(
-        &tool_path,
-        "#!/bin/bash\necho \"should-not-run\"\n",
-    ).unwrap();
+    std::fs::write(&tool_path, "#!/bin/bash\necho \"should-not-run\"\n").unwrap();
     // Explicitly set non-executable
     std::fs::set_permissions(
         &tool_path,
         std::os::unix::fs::PermissionsExt::from_mode(0o644),
-    ).unwrap();
+    )
+    .unwrap();
 
     temp_dir
 }
 
 #[test]
 fn test_auth_env_var_strategy_integration() {
+    let env_name = unique_env_var("AUTH");
     let temp_dir = setup_tool_with_auth(
         "auth-tool",
-        r#"{"strategy": "env_var", "required_env_vars": ["AUTH_KEY"]}"#,
-        "AUTH_KEY",
+        &format!(r#"{{"strategy": "env_var", "required_env_vars": ["{env_name}"]}}"#),
+        &env_name,
     );
-
-    unsafe { std::env::set_var("AUTH_KEY", "secret123"); }
 
     let init_params = serde_json::json!({
         "protocolVersion": "2024-11-05",
@@ -165,36 +138,49 @@ fn test_auth_env_var_strategy_integration() {
         Some(temp_dir.path().to_path_buf()), // tools_dir
         None,
         None,
-        vec![("AUTH_KEY", "secret123")],
+        vec![(&env_name, "secret123")],
         vec![
             ("initialize", Some(&init_params)),
             ("tools/call", Some(&call_params)),
         ],
     );
 
-    unsafe { std::env::remove_var("AUTH_KEY"); }
-
     if output.results.len() != 2 {
-        panic!("Expected 2 results, got {}: {}\ntools dir: {}\nstderr: {}", output.results.len(), serde_json::to_string_pretty(&output.results).unwrap(), temp_dir.path().display(), output.stderr);
+        panic!(
+            "Expected 2 results, got {}: {}\ntools dir: {}\nstderr: {}",
+            output.results.len(),
+            serde_json::to_string_pretty(&output.results).unwrap(),
+            temp_dir.path().display(),
+            output.stderr
+        );
     }
     let call_result = &output.results[1];
     if call_result.get("error").is_some() {
-        panic!("Tool call failed: {:?}\ntools dir: {}\nstderr: {}", call_result["error"], temp_dir.path().display(), output.stderr);
+        panic!(
+            "Tool call failed: {:?}\ntools dir: {}\nstderr: {}\nall results: {}",
+            call_result["error"],
+            temp_dir.path().display(),
+            output.stderr,
+            serde_json::to_string_pretty(&output.results).unwrap()
+        );
     }
     let call_result = &call_result["result"];
     let content = call_result["content"][0]["text"].as_str().unwrap();
-    assert!(content.contains("secret123"), "Expected 'secret123' in: {}", content);
+    assert!(
+        content.contains("secret123"),
+        "Expected 'secret123' in: {}",
+        content
+    );
 }
 
 #[test]
 fn test_auth_bearer_strategy_integration() {
+    let env_name = unique_env_var("BEARER");
     let temp_dir = setup_tool_with_auth(
         "bearer-tool",
-        r#"{"strategy": "bearer_token", "required_env_vars": ["BEARER_TOKEN"]}"#,
-        "BEARER_TOKEN",
+        &format!(r#"{{"strategy": "bearer_token", "required_env_vars": ["{env_name}"]}}"#),
+        &env_name,
     );
-
-    unsafe { std::env::set_var("BEARER_TOKEN", "my-bearer-token"); }
 
     let init_params = serde_json::json!({
         "protocolVersion": "2024-11-05",
@@ -211,34 +197,40 @@ fn test_auth_bearer_strategy_integration() {
         Some(temp_dir.path().to_path_buf()), // tools_dir
         None,
         None,
-        vec![("BEARER_TOKEN", "my-bearer-token")],
+        vec![(&env_name, "my-bearer-token")],
         vec![
             ("initialize", Some(&init_params)),
             ("tools/call", Some(&call_params)),
         ],
     );
 
-    unsafe { std::env::remove_var("BEARER_TOKEN"); }
-
     assert_eq!(output.results.len(), 2);
     let call_result = &output.results[1];
     if call_result.get("error").is_some() {
-        panic!("Tool call failed: {}\ntools dir: {}\nstderr: {}", call_result["error"], temp_dir.path().display(), output.stderr);
+        panic!(
+            "Tool call failed: {}\ntools dir: {}\nstderr: {}",
+            call_result["error"],
+            temp_dir.path().display(),
+            output.stderr
+        );
     }
     let call_result = &call_result["result"];
     let content = call_result["content"][0]["text"].as_str().unwrap();
-    assert!(content.contains("my-bearer-token"), "Expected 'my-bearer-token' in: {}", content);
+    assert!(
+        content.contains("my-bearer-token"),
+        "Expected 'my-bearer-token' in: {}",
+        content
+    );
 }
 
 #[test]
 fn test_auth_api_key_strategy_integration() {
+    let env_name = unique_env_var("APIKEY");
     let temp_dir = setup_tool_with_auth(
         "apikey-tool",
-        r#"{"strategy": "api_key_header", "required_env_vars": ["API_KEY"]}"#,
-        "API_KEY",
+        &format!(r#"{{"strategy": "api_key_header", "required_env_vars": ["{env_name}"]}}"#),
+        &env_name,
     );
-
-    unsafe { std::env::set_var("API_KEY", "api-key-value"); }
 
     let init_params = serde_json::json!({
         "protocolVersion": "2024-11-05",
@@ -255,34 +247,39 @@ fn test_auth_api_key_strategy_integration() {
         Some(temp_dir.path().to_path_buf()), // tools_dir
         None,
         None,
-        vec![("API_KEY", "api-key-value")],
+        vec![(&env_name, "api-key-value")],
         vec![
             ("initialize", Some(&init_params)),
             ("tools/call", Some(&call_params)),
         ],
     );
 
-    unsafe { std::env::remove_var("API_KEY"); }
-
     assert_eq!(output.results.len(), 2);
     let call_result = &output.results[1];
     if call_result.get("error").is_some() {
-        panic!("Tool call failed: {}\ntools dir: {}\nstderr: {}", call_result["error"], temp_dir.path().display(), output.stderr);
+        panic!(
+            "Tool call failed: {}\ntools dir: {}\nstderr: {}",
+            call_result["error"],
+            temp_dir.path().display(),
+            output.stderr
+        );
     }
     let call_result = &call_result["result"];
     let content = call_result["content"][0]["text"].as_str().unwrap();
-    assert!(content.contains("api-key-value"), "Expected 'api-key-value' in: {}", content);
+    assert!(
+        content.contains("api-key-value"),
+        "Expected 'api-key-value' in: {}",
+        content
+    );
 }
 
 #[test]
 fn test_auth_missing_credentials_fails() {
+    let env_name = unique_env_var("MISSING");
     let temp_dir = setup_tool_with_auth_no_exec(
         "missing-auth-tool",
-        r#"{"strategy": "env_var", "required_env_vars": ["UNIQUE_MISSING_AUTH_KEY_XYZ"]}"#,
+        &format!(r#"{{"strategy": "env_var", "required_env_vars": ["{env_name}"]}}"#),
     );
-
-    // Ensure the env var is unset (it may leak from other tests)
-    unsafe { std::env::remove_var("UNIQUE_MISSING_AUTH_KEY_XYZ"); }
 
     let init_params = serde_json::json!({
         "protocolVersion": "2024-11-05",
@@ -317,26 +314,28 @@ fn test_auth_missing_credentials_fails() {
 
 #[test]
 fn test_auth_flat_auth_file() {
+    let env_name = unique_env_var("FLAT");
     let temp_dir = TempDir::new().unwrap();
 
     // Create flat auth file (not in subdirectory)
     std::fs::write(
         temp_dir.path().join("flat-tool.auth.json"),
-        r#"{"strategy": "env_var", "required_env_vars": ["FLAT_AUTH_KEY"]}"#,
-    ).unwrap();
+        format!(r#"{{"strategy": "env_var", "required_env_vars": ["{env_name}"]}}"#),
+    )
+    .unwrap();
 
     // Create a simple tool
     let tool_path = temp_dir.path().join("flat-tool");
     std::fs::write(
         &tool_path,
-        "#!/bin/bash\necho \"FLAT=$FLAT_AUTH_KEY\"\n",
-    ).unwrap();
+        format!("#!/bin/bash\necho \"FLAT=${{{env_name}}}\"\n"),
+    )
+    .unwrap();
     std::fs::set_permissions(
         &tool_path,
         std::os::unix::fs::PermissionsExt::from_mode(0o755),
-    ).unwrap();
-
-    unsafe { std::env::set_var("FLAT_AUTH_KEY", "flat_secret"); }
+    )
+    .unwrap();
 
     let init_params = serde_json::json!({
         "protocolVersion": "2024-11-05",
@@ -353,17 +352,20 @@ fn test_auth_flat_auth_file() {
         Some(temp_dir.path().to_path_buf()), // tools_dir
         None,
         None,
-        vec![("FLAT_AUTH_KEY", "flat_secret")],
+        vec![(&env_name, "flat_secret")],
         vec![
             ("initialize", Some(&init_params)),
             ("tools/call", Some(&call_params)),
         ],
     );
 
-    unsafe { std::env::remove_var("FLAT_AUTH_KEY"); }
-
     assert_eq!(output.results.len(), 2);
     let call_result = &output.results[1]["result"];
     let content = &call_result["content"][0]["text"];
-    assert!(content.as_str().unwrap().contains("flat_secret"), "Expected 'flat_secret' in: {}\nstderr: {}", content, output.stderr);
+    assert!(
+        content.as_str().unwrap().contains("flat_secret"),
+        "Expected 'flat_secret' in: {}\nstderr: {}",
+        content,
+        output.stderr
+    );
 }

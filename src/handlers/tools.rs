@@ -110,7 +110,23 @@ pub async fn handle_tools_call(
     let (stdout_result, stderr_output) = {
         let mut stdin = child.stdin.take().context("Failed to open stdin")?;
         use tokio::io::AsyncWriteExt;
-        stdin.write_all(input.to_string().as_bytes()).await?;
+        // Handle EPIPE (broken pipe) if the tool exits before we finish writing.
+        // This can happen with fast tools that don't read stdin.
+        let write_result = stdin.write_all(input.to_string().as_bytes()).await;
+        if let Err(e) = write_result {
+            if e.kind() == std::io::ErrorKind::BrokenPipe {
+                debug!(
+                    "Tool '{}' exited before stdin was fully written (broken pipe)",
+                    call_params.name
+                );
+            } else {
+                return Err(anyhow::anyhow!(
+                    "Failed to write to tool '{}': {}",
+                    call_params.name,
+                    e
+                ));
+            }
+        }
         drop(stdin);
 
         let mut stdout = child.stdout.take().context("Failed to open stdout")?;
