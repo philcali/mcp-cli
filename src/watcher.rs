@@ -28,6 +28,10 @@ pub type CacheInvalidateCallback = Box<dyn Fn() + Send + Sync>;
 /// Callback type for list changed notifications.
 pub type ListChangedCallback = Box<dyn Fn() + Send + Sync>;
 
+/// Callback type for resource updated notifications.
+/// The closure receives the file path that changed.
+pub type ResourceUpdatedCallback = Box<dyn Fn(&std::path::Path) + Send + Sync>;
+
 /// Unified file system watcher trait.
 pub trait FileSystemWatcher: Send + Sync {
     /// Start watching a directory for changes.
@@ -43,6 +47,9 @@ pub trait FileSystemWatcher: Send + Sync {
 
     /// Notify that the list of items has changed.
     fn on_list_changed(&self);
+
+    /// Notify that a specific resource file was updated.
+    fn on_updated(&self, path: &std::path::Path);
 }
 
 /// Watcher for prompt files.
@@ -105,6 +112,8 @@ impl FileSystemWatcher for PromptWatcher {
     fn on_list_changed(&self) {
         self.on_list_changed();
     }
+
+    fn on_updated(&self, _path: &std::path::Path) {}
 }
 
 impl PromptWatcher {
@@ -195,6 +204,8 @@ impl FileSystemWatcher for ToolWatcher {
     fn on_list_changed(&self) {
         debug!("Tool list changed notification emitted");
     }
+
+    fn on_updated(&self, _path: &std::path::Path) {}
 }
 
 impl ToolWatcher {
@@ -255,39 +266,35 @@ impl ResourceWatcher {
     pub fn new() -> Self {
         Self
     }
-}
 
-impl FileSystemWatcher for ResourceWatcher {
-    fn start_watching(
+    pub fn start_watching(
         dir: PathBuf,
         config: WatchConfig,
-        _on_change: CacheInvalidateCallback,
-        _on_list_changed: ListChangedCallback,
+        on_change: CacheInvalidateCallback,
+        on_list_changed: ListChangedCallback,
+        on_updated: ResourceUpdatedCallback,
     ) -> Result<std::sync::Arc<tokio::task::JoinHandle<()>>> {
         if !config.watch_for_changes {
             warn!("Resource file watching is disabled in configuration");
             return Ok(std::sync::Arc::new(tokio::task::spawn(async {})));
         }
 
-        let watcher = ResourceWatcher::new();
         let watch_config = config.clone();
 
         let handle = tokio::task::spawn(async move {
-            Self::watch_directory(dir, &watcher, watch_config).await;
+            Self::watch_directory(dir, on_change, on_list_changed, on_updated, watch_config).await;
         });
 
         Ok(std::sync::Arc::new(handle))
     }
 
-    fn on_change(&self) {}
-
-    fn on_list_changed(&self) {
-        debug!("Resource list changed notification emitted");
-    }
-}
-
-impl ResourceWatcher {
-    async fn watch_directory(dir: PathBuf, watcher: &ResourceWatcher, config: WatchConfig) {
+    async fn watch_directory(
+        dir: PathBuf,
+        on_change: CacheInvalidateCallback,
+        on_list_changed: ListChangedCallback,
+        on_updated: ResourceUpdatedCallback,
+        config: WatchConfig,
+    ) {
         if !config.watch_for_changes {
             warn!("Resource file watching is disabled");
             return;
@@ -320,7 +327,13 @@ impl ResourceWatcher {
                         for path in &event.paths {
                             info!("Resource file change detected: {:?}", path);
                         }
-                        watcher.on_list_changed();
+                        (on_change)();
+                        (on_list_changed)();
+                        for path in &event.paths {
+                            if path.is_file() {
+                                (on_updated)(path);
+                            }
+                        }
                     }
                 }
                 Err(e) => {
@@ -390,13 +403,15 @@ impl EventManager {
         config: WatchConfig,
         on_change: CacheInvalidateCallback,
         on_list_changed: ListChangedCallback,
+        on_updated: ResourceUpdatedCallback,
     ) -> Result<()> {
         if self.resource_handle.is_some() {
             warn!("Resource watcher already started");
             return Ok(());
         }
 
-        let handle = ResourceWatcher::start_watching(dir, config, on_change, on_list_changed)?;
+        let handle =
+            ResourceWatcher::start_watching(dir, config, on_change, on_list_changed, on_updated)?;
         self.resource_handle = Some(handle);
         Ok(())
     }
