@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 use tracing::info;
 
 use crate::auth;
+use crate::auth::TokenCache;
 use crate::discovery::prompts::{PromptEntry, discover_prompts};
 use crate::discovery::resources::{ResourceEntry, discover_resources};
 use crate::discovery::tools::{ToolDefinition, discover_tools};
@@ -26,6 +27,8 @@ pub struct ServerState {
     pub subscription_manager: Arc<dyn ResourceManager + Send + Sync>,
     /// Whether the server has been successfully initialized
     pub initialized: AtomicBool,
+    /// OAuth2 token cache shared across all requests
+    pub oauth_cache: TokenCache,
 }
 
 impl Clone for ServerState {
@@ -42,6 +45,7 @@ impl Clone for ServerState {
             roots: Mutex::new(self.roots.lock().unwrap().clone()),
             subscription_manager: Arc::clone(&self.subscription_manager),
             initialized: AtomicBool::new(self.initialized.load(Ordering::SeqCst)),
+            oauth_cache: self.oauth_cache.clone(),
         }
     }
 }
@@ -63,6 +67,7 @@ impl ServerState {
             roots: Mutex::new(Vec::new()),
             subscription_manager,
             initialized: AtomicBool::new(false),
+            oauth_cache: TokenCache::new(),
         }
     }
 
@@ -130,7 +135,9 @@ impl ServerState {
         tool_name: &str,
     ) -> Result<std::collections::HashMap<String, String>, anyhow::Error> {
         match &self.tools_dir {
-            Some(tools_dir) => auth::resolve_credentials(tools_dir, tool_name).await,
+            Some(tools_dir) => {
+                auth::resolve_credentials(&self.oauth_cache, tools_dir, tool_name).await
+            }
             None => Ok(std::collections::HashMap::new()),
         }
     }

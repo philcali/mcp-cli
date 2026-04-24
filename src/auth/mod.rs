@@ -15,13 +15,14 @@ pub use token_cache::TokenCache;
 
 /// Resolve credentials for a tool based on its auth strategy.
 pub async fn resolve_credentials(
+    cache: &TokenCache,
     tools_dir: &std::path::Path,
     tool_name: &str,
 ) -> Result<HashMap<String, String>> {
     let auth_config = load_auth_config(tools_dir, tool_name)?;
 
     match auth_config {
-        Some(config) => resolve_with_strategy(&config, tool_name).await,
+        Some(config) => resolve_with_strategy(&config, tool_name, cache).await,
         None => Ok(HashMap::new()),
     }
 }
@@ -29,9 +30,8 @@ pub async fn resolve_credentials(
 async fn resolve_with_strategy(
     config: &ToolAuthConfig,
     tool_name: &str,
+    cache: &TokenCache,
 ) -> Result<HashMap<String, String>> {
-    let cache = TokenCache::new();
-
     match &config.strategy {
         AuthStrategy::EnvVar => validate_and_inject(config),
         AuthStrategy::OAuth2 => {
@@ -39,7 +39,7 @@ async fn resolve_with_strategy(
                 .oauth_config
                 .as_ref()
                 .context("OAuth2 strategy configured but no oauth_config provided")?;
-            oauth2::resolve_oauth2(oauth_config, config, tool_name, &cache).await
+            oauth2::resolve_oauth2(oauth_config, config, tool_name, cache).await
         }
         AuthStrategy::ApiKeyHeader => api_key::resolve(config),
         AuthStrategy::BearerToken => bearer::resolve(config),

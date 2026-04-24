@@ -430,13 +430,25 @@ Add benchmark tests for:
 - Concurrent requests (if persistent mode added)
 
 ### 23. Example Tools Repository
-**Status**: ⏳ Pending
+**Status**: ✅ Completed
 
-Create example tool scripts demonstrating:
-- Complex argument parsing
-- Multiple output content types (text, image blobs)
-- Error handling patterns
-- Auth integration examples
+Created `docs/examples/tools/` with example tool scripts demonstrating:
+
+**Tools:**
+- `curl-request.sh` — HTTP client with complex argument parsing (method, headers, body) and flexible auth (none, bearer_token, api_key)
+- `file-manager.sh` — CRUD file operations (read, write, list, delete, exists) with path safety checks
+- `weather.sh` — External API call with `bearer_token` auth strategy
+- `db-query.sh` — Database query tool with `api_key` auth strategy
+- `deploy.sh` — Deployment tool with `oauth2` client credentials flow
+- `image-info.sh` — Multiple content output types (text metadata + base64 image)
+- `env-inspector.sh` — Debugging tool for verifying auth config and credential injection
+
+**Auth configs:**
+- `weather.auth.json` — bearer_token
+- `db-query.auth.json` — api_key
+- `deploy.auth.json` — oauth2 with client credentials
+
+Each tool includes inline documentation explaining the pattern and usage examples.
 
 ### 24. Client SDK Examples
 **Status**: ⏳ Pending
