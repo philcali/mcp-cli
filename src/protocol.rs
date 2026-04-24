@@ -124,6 +124,22 @@ pub struct RootsCapabilityServer {
     pub list_changed: bool,
 }
 
+/// Tools capability - indicates server supports tool listing and calling.
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct ToolsCapability {
+    /// Whether the server sends notifications when its tool list changes.
+    #[serde(skip_serializing_if = "Option::is_none", rename = "listChanged")]
+    pub list_changed: Option<bool>,
+}
+
+/// Prompts capability - indicates server supports prompt listing and getting.
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct PromptsCapability {
+    /// Whether the server sends notifications when its prompt list changes.
+    #[serde(skip_serializing_if = "Option::is_none", rename = "listChanged")]
+    pub list_changed: Option<bool>,
+}
+
 /// Server capabilities object.
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct ServerCapabilities {
@@ -132,13 +148,13 @@ pub struct ServerCapabilities {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub logging: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub prompts: Option<bool>,
+    pub prompts: Option<PromptsCapability>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resources: Option<ResourcesCapability>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub roots: Option<RootsCapabilityServer>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub tools: Option<bool>,
+    pub tools: Option<ToolsCapability>,
 }
 
 impl ServerCapabilities {
@@ -147,7 +163,9 @@ impl ServerCapabilities {
     }
 
     pub fn with_tools(mut self) -> Self {
-        self.tools = Some(true);
+        self.tools = Some(ToolsCapability {
+            list_changed: Some(true),
+        });
         self
     }
 
@@ -157,7 +175,9 @@ impl ServerCapabilities {
     }
 
     pub fn with_prompts(mut self) -> Self {
-        self.prompts = Some(true);
+        self.prompts = Some(PromptsCapability {
+            list_changed: Some(true),
+        });
         self
     }
 

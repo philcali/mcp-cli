@@ -412,12 +412,13 @@ Extended `mime_from_extension()` in `src/discovery/resources.rs` to cover:
 - Archives (`application/zip`, `application/x-tar`, `application/gzip`, `application/x-bzip2`, `application/x-xz`, `application/x-7z-compressed`, `application/vnd.rar`)
 
 ### 21. Tool Authentication
-**Status**: ⏳ Pending
+**Status**: ✅ Completed
 
-Currently has basic auth config loading (`.auth.json`), but needs:
-- OAuth2 token flow implementation
-- Better credential injection into tool environment
-- Environment variable validation and masking
+Implemented full authentication support:
+- **OAuth2 token flow**: Client credentials grant with automatic token refresh
+- **Credential injection**: Auth tokens injected into tool process environment variables
+- **Environment variable validation**: Proper masking and validation of sensitive values
+- **Multiple auth strategies**: `none`, `bearer_token`, `api_key`, `oauth2` support
 
 ## Testing & Documentation
 
@@ -457,6 +458,54 @@ Add client integration examples for:
 - TypeScript/JavaScript clients
 - Python clients
 - Shell script wrappers
+
+## MCP Specification Compliance
+
+### 25. ListChanged Notifications
+**Status**: 🔄 In Progress
+
+The MCP spec defines `notifications/tools/list_changed`, `notifications/resources/list_changed`, and `notifications/prompts/list_changed` for clients to stay in sync with server state changes.
+
+**Tasks:**
+- Emit `notifications/tools/list_changed` when tools directory changes (types exist in protocol.rs:378-399, never emitted)
+- Emit `notifications/resources/list_changed` when resources directory changes (types exist in protocol.rs:519-533, never emitted)
+- Emit `notifications/prompts/list_changed` when prompts directory changes
+- Emit `notifications/resources/updated` to subscribers when resource files change
+
+### 26. Sampling / createMessage
+**Status**: ⏳ Pending
+
+The MCP spec defines `sampling/createMessage` which lets the server ask the client to call an LLM on its behalf. Major capability gap.
+
+**Tasks:**
+- Protocol types: `CreateMessageRequest`, `SamplingMessage`, `CreateMessageResult`
+- Client capabilities detection
+- Handler that sends request to client and awaits response
+- Server capability flag
+- Integration test
+
+### 27. Completions / complete
+**Status**: ⏳ Pending
+
+The MCP spec defines `completion/complete` for argument autocompletion.
+
+**Tasks:**
+- Protocol types: `CompleteRequest`, `CompleteResult`, `CompleteList`
+- Handler for `completion/complete` method
+- Completion logic for tool names, argument values
+- Server capability flag
+- Integration test
+
+### 28. Resource Templates
+**Status**: ⏳ Pending
+
+`ResourceTemplate` type exists in protocol.rs but is never used.
+
+**Tasks:**
+- Implement `resources/templates/list` method
+- Discover resource templates from resources directory
+- Advertise `templates` in resources capability
+- Integration test
 
 ## Backlog / Future Work
 

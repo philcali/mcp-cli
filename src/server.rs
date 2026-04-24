@@ -110,7 +110,9 @@ impl McpServer {
     }
 
     pub fn enable_tools(mut self) -> Self {
-        self.capabilities.tools = Some(true);
+        self.capabilities.tools = Some(ToolsCapability {
+            list_changed: Some(true),
+        });
         self
     }
 
@@ -132,6 +134,7 @@ impl McpServer {
             None => return Err(anyhow::anyhow!("No tools directory configured")),
         };
         let state_clone = self.state.clone();
+        let notification_tx = self.notification_tx.clone();
         crate::watcher::ToolWatcher::start_watching(
             dir,
             WatchConfig {
@@ -139,6 +142,15 @@ impl McpServer {
             },
             Box::new(move || {
                 state_clone.cached_tools.lock().unwrap().clear();
+            }),
+            Box::new(move || {
+                if let Some(ref tx) = notification_tx {
+                    let msg = json!({
+                        "jsonrpc": "2.0",
+                        "method": "notifications/tools/listChanged",
+                    });
+                    let _ = tx.send(msg.to_string());
+                }
             }),
         )
     }
@@ -168,7 +180,9 @@ impl McpServer {
     }
 
     pub fn enable_prompts(mut self) -> Self {
-        self.capabilities.prompts = Some(true);
+        self.capabilities.prompts = Some(PromptsCapability {
+            list_changed: Some(true),
+        });
         self
     }
 
@@ -242,6 +256,7 @@ impl McpServer {
             return Ok(std::sync::Arc::new(tokio::task::spawn(async {})));
         }
         let state_clone = self.state.clone();
+        let notification_tx = self.notification_tx.clone();
         crate::watcher::PromptWatcher::start_watching(
             dir,
             WatchConfig {
@@ -249,6 +264,42 @@ impl McpServer {
             },
             Box::new(move || {
                 state_clone.cached_prompts.lock().unwrap().clear();
+            }),
+            Box::new(move || {
+                if let Some(ref tx) = notification_tx {
+                    let msg = json!({
+                        "jsonrpc": "2.0",
+                        "method": "notifications/prompts/listChanged",
+                    });
+                    let _ = tx.send(msg.to_string());
+                }
+            }),
+        )
+    }
+
+    pub fn start_resource_watcher(&self) -> Result<std::sync::Arc<tokio::task::JoinHandle<()>>> {
+        let dir = match &self.state.resources_dir {
+            Some(p) => p.clone(),
+            None => return Err(anyhow::anyhow!("No resources directory configured")),
+        };
+        let state_clone = self.state.clone();
+        let notification_tx = self.notification_tx.clone();
+        crate::watcher::ResourceWatcher::start_watching(
+            dir,
+            WatchConfig {
+                watch_for_changes: true,
+            },
+            Box::new(move || {
+                state_clone.cached_resources.lock().unwrap().clear();
+            }),
+            Box::new(move || {
+                if let Some(ref tx) = notification_tx {
+                    let msg = json!({
+                        "jsonrpc": "2.0",
+                        "method": "notifications/resources/listChanged",
+                    });
+                    let _ = tx.send(msg.to_string());
+                }
             }),
         )
     }
