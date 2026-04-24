@@ -644,3 +644,201 @@ fn test_daemon_mode_multiple_requests() {
         );
     }
 }
+
+#[test]
+fn test_resources_updated_notification_on_subscribed_resource() {
+    let temp_dir = TempDir::new().unwrap();
+    let resource_file = temp_dir.path().join("test-resource.txt");
+    fs::write(&resource_file, "initial content").unwrap();
+
+    let init_params = serde_json::json!({
+        "protocolVersion": "2024-11-05",
+        "capabilities": {},
+        "clientInfo": { "name": "test-client", "version": "1.0" }
+    });
+
+    let resource_uri = format!("file://{}", resource_file.display());
+
+    let subscribe_params = serde_json::json!({ "uri": resource_uri });
+
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_mcp-cli"));
+    cmd.arg("--daemon")
+        .arg("--resources-dir")
+        .arg(temp_dir.path().to_str().unwrap());
+
+    let mut child = cmd
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("Failed to spawn mcp-cli daemon");
+
+    // Spawn a thread to collect stdout while we send requests
+    let stdout = child.stdout.take().unwrap();
+    let stdout_handle = std::thread::spawn(move || -> Vec<String> {
+        std::io::BufReader::new(stdout)
+            .lines()
+            .map_while(|l| l.ok())
+            .collect()
+    });
+
+    // Send requests
+    if let Some(ref mut stdin) = child.stdin {
+        let init_req = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": init_params,
+        });
+        writeln!(stdin, "{}", init_req).unwrap();
+        stdin.flush().unwrap();
+
+        let sub_req = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "resources/subscribe",
+            "params": subscribe_params,
+        });
+        writeln!(stdin, "{}", sub_req).unwrap();
+        stdin.flush().unwrap();
+    }
+
+    // Give watcher time to start
+    std::thread::sleep(std::time::Duration::from_millis(300));
+
+    // Modify the resource file
+    fs::write(&resource_file, "updated content").unwrap();
+
+    // Give watcher time to detect the change
+    std::thread::sleep(std::time::Duration::from_millis(800));
+
+    // Kill the daemon to flush stdout
+    #[cfg(unix)]
+    unsafe {
+        libc::kill(child.id() as i32, SIGTERM);
+    }
+
+    let _output = child.wait().unwrap();
+
+    // Collect stdout from the thread
+    let all_stdout_lines = stdout_handle.join().unwrap();
+
+    // Parse all lines and find notifications
+    let mut notifications: Vec<serde_json::Value> = Vec::new();
+    for line in &all_stdout_lines {
+        if line.trim_start().starts_with('{') {
+            let parsed: serde_json::Value = serde_json::from_str(line).unwrap_or_default();
+            if parsed.get("method").is_some() && parsed.get("id").is_none() {
+                notifications.push(parsed);
+            }
+        }
+    }
+
+    // Check that we received a resources/updated notification
+    let updated = notifications.iter().find(|n| {
+        n.get("method").and_then(|m| m.as_str()) == Some("notifications/resources/updated")
+    });
+
+    assert!(
+        updated.is_some(),
+        "Expected resources/updated notification, got: {:?}",
+        notifications
+    );
+
+    if let Some(notification) = updated {
+        assert_eq!(notification["params"]["uri"], resource_uri);
+    }
+}
+
+#[test]
+fn test_resources_updated_no_notification_for_unsubscribed_resource() {
+    let temp_dir = TempDir::new().unwrap();
+    let resource_file_a = temp_dir.path().join("resource-a.txt");
+    let resource_file_b = temp_dir.path().join("resource-b.txt");
+    fs::write(&resource_file_a, "content a").unwrap();
+    fs::write(&resource_file_b, "content b").unwrap();
+
+    let init_params = serde_json::json!({
+        "protocolVersion": "2024-11-05",
+        "capabilities": {},
+        "clientInfo": { "name": "test-client", "version": "1.0" }
+    });
+
+    let uri_a = format!("file://{}", resource_file_a.display());
+    let subscribe_params = serde_json::json!({ "uri": uri_a });
+
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_mcp-cli"));
+    cmd.arg("--daemon")
+        .arg("--resources-dir")
+        .arg(temp_dir.path().to_str().unwrap());
+
+    let mut child = cmd
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("Failed to spawn mcp-cli daemon");
+
+    let stdout = child.stdout.take().unwrap();
+    let stdout_handle = std::thread::spawn(move || -> Vec<String> {
+        std::io::BufReader::new(stdout)
+            .lines()
+            .map_while(|l| l.ok())
+            .collect()
+    });
+
+    if let Some(ref mut stdin) = child.stdin {
+        let init_req = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": init_params,
+        });
+        writeln!(stdin, "{}", init_req).unwrap();
+        stdin.flush().unwrap();
+
+        let sub_req = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "resources/subscribe",
+            "params": subscribe_params,
+        });
+        writeln!(stdin, "{}", sub_req).unwrap();
+        stdin.flush().unwrap();
+    }
+
+    std::thread::sleep(std::time::Duration::from_millis(300));
+
+    // Modify the unsubscribed resource
+    fs::write(&resource_file_b, "updated content b").unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(800));
+
+    #[cfg(unix)]
+    unsafe {
+        libc::kill(child.id() as i32, SIGTERM);
+    }
+
+    let _output = child.wait().unwrap();
+
+    let all_stdout_lines = stdout_handle.join().unwrap();
+
+    let mut notifications: Vec<serde_json::Value> = Vec::new();
+    for line in &all_stdout_lines {
+        if line.trim_start().starts_with('{') {
+            let parsed: serde_json::Value = serde_json::from_str(line).unwrap_or_default();
+            if parsed.get("method").is_some() && parsed.get("id").is_none() {
+                notifications.push(parsed);
+            }
+        }
+    }
+
+    let updated = notifications.iter().any(|n| {
+        n.get("method").and_then(|m| m.as_str()) == Some("notifications/resources/updated")
+    });
+
+    assert!(
+        !updated,
+        "Should NOT receive resources/updated for unsubscribed resource, got: {:?}",
+        notifications
+    );
+}
