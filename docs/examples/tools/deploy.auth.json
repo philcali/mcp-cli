@@ -1,0 +1,10 @@
+{
+  "strategy": "oauth2",
+  "required_env_vars": ["DEPLOY_CLIENT_SECRET"],
+  "oauth_config": {
+    "client_id_env": "DEPLOY_CLIENT_ID",
+    "token_url": "https://auth.example.com/oauth2/token",
+    "scopes": ["deploy:write"]
+  },
+  "description": "Deployment service uses OAuth2 client credentials flow"
+}

@@ -1,0 +1,5 @@
+{
+  "strategy": "api_key",
+  "required_env_vars": ["DB_API_URL", "DB_API_KEY"],
+  "description": "Database API requires URL and API key"
+}

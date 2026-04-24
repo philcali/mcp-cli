@@ -58,7 +58,13 @@ pub async fn handle_tools_call(
     let creds = if let Some(ref _config) = auth_config
         && let Some(ref tools_dir) = server.state.tools_dir
     {
-        match crate::auth::resolve_credentials(tools_dir, &call_params.name).await {
+        match crate::auth::resolve_credentials(
+            &server.state.oauth_cache,
+            tools_dir,
+            &call_params.name,
+        )
+        .await
+        {
             Ok(creds) => {
                 debug!(
                     "Resolved {} credential(s) for tool '{}'",
@@ -239,7 +245,13 @@ pub async fn handle_tools_call_streaming(
     let creds = if let Some(ref _config) = auth_config
         && let Some(ref tools_dir) = server.state.tools_dir
     {
-        match crate::auth::resolve_credentials(tools_dir, &call_params.name).await {
+        match crate::auth::resolve_credentials(
+            &server.state.oauth_cache,
+            tools_dir,
+            &call_params.name,
+        )
+        .await
+        {
             Ok(creds) => creds,
             Err(e) => {
                 return Err(anyhow::anyhow!(

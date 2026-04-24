@@ -1,0 +1,5 @@
+{
+  "strategy": "bearer_token",
+  "required_env_vars": ["WEATHER_API_KEY"],
+  "description": "Weather API requires a bearer token key"
+}
