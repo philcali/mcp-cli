@@ -285,20 +285,46 @@ impl McpServer {
         let state_clone = self.state.clone();
         let notification_tx = self.notification_tx.clone();
         crate::watcher::ResourceWatcher::start_watching(
-            dir,
+            dir.clone(),
             WatchConfig {
                 watch_for_changes: true,
             },
-            Box::new(move || {
-                state_clone.cached_resources.lock().unwrap().clear();
+            Box::new({
+                let state = state_clone.clone();
+                move || {
+                    state.cached_resources.lock().unwrap().clear();
+                }
             }),
-            Box::new(move || {
-                if let Some(ref tx) = notification_tx {
-                    let msg = json!({
-                        "jsonrpc": "2.0",
-                        "method": "notifications/resources/listChanged",
-                    });
-                    let _ = tx.send(msg.to_string());
+            Box::new({
+                let tx = notification_tx.clone();
+                move || {
+                    if let Some(ref tx) = tx {
+                        let msg = json!({
+                            "jsonrpc": "2.0",
+                            "method": "notifications/resources/listChanged",
+                        });
+                        let _ = tx.send(msg.to_string());
+                    }
+                }
+            }),
+            Box::new({
+                let state = state_clone.clone();
+                let tx = notification_tx;
+                move |path: &std::path::Path| {
+                    let resource_uri = format!("file://{}", path.display());
+                    let subscriptions: Vec<String> = state.subscription_manager.get_subscriptions();
+                    if subscriptions.contains(&resource_uri)
+                        && let Some(ref tx) = tx
+                    {
+                        let msg = json!({
+                            "jsonrpc": "2.0",
+                            "method": "notifications/resources/updated",
+                            "params": {
+                                "uri": resource_uri,
+                            },
+                        });
+                        let _ = tx.send(msg.to_string());
+                    }
                 }
             }),
         )
