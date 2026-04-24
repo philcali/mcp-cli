@@ -47,7 +47,7 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     let mut builder = ServerBuilder::new("mcp-cli", "0.1.0")
         .with_tools()
-        .with_resources(false);
+        .with_resources(true);
 
     let tools_dir = cli.tools_dir.clone();
     let resources_dir = cli.resources_dir.clone();
@@ -94,6 +94,16 @@ async fn main() -> Result<()> {
                 std::mem::forget(handle);
             }
             Err(e) => warn!("Failed to start prompt watcher: {}", e),
+        }
+    }
+
+    if resources_dir.is_some() {
+        match srv.start_resource_watcher() {
+            Ok(handle) => {
+                info!("Started resource watcher");
+                std::mem::forget(handle);
+            }
+            Err(e) => warn!("Failed to start resource watcher: {}", e),
         }
     }
 
