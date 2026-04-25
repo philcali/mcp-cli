@@ -30,6 +30,7 @@ pub async fn route_request(
         "prompts/get" => crate::handlers::handle_prompts_get(server, params).await,
         "telemetry/event" => crate::handlers::handle_telemetry_event(server, params).await,
         "notifications/initialized" => Ok(json!({})),
+        "completion/complete" => crate::handlers::handle_completion_complete(server, params).await,
         _ => Err(anyhow::anyhow!("Unknown method: {}", method)),
     }
 }
@@ -59,6 +60,10 @@ pub const KNOWN_METHODS: &[(&str, &str)] = &[
     (
         "notifications/initialized",
         "Notification: client initialized",
+    ),
+    (
+        "completion/complete",
+        "Get autocompletion suggestions for arguments",
     ),
 ];
 

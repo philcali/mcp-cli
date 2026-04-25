@@ -1113,6 +1113,43 @@ pub fn validate_prompt_arguments(
 }
 
 // ===========================================================================
+// COMPLETION SUPPORT
+// ===========================================================================
+
+/// Reference to a completion location (tool, prompt, or resource).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct CompletionReference {
+    #[serde(rename = "type")]
+    pub ref_type: String,
+    pub value: String,
+}
+
+/// Completion request parameters.
+#[derive(Debug, Deserialize)]
+pub struct CompleteParams {
+    #[serde(rename = "ref")]
+    pub ref_: CompletionReference,
+    pub argument: CompleteArgument,
+}
+
+/// The argument being completed.
+#[derive(Debug, Deserialize)]
+pub struct CompleteArgument {
+    pub name: String,
+    pub value: String,
+}
+
+/// Completion result.
+#[derive(Debug, Serialize)]
+pub struct CompleteResult {
+    pub values: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub has_more: Option<bool>,
+}
+
+// ===========================================================================
 // LOGGING SUPPORT
 // ===========================================================================
 

@@ -485,16 +485,30 @@ The MCP spec defines `sampling/createMessage` which lets the server ask the clie
 - Integration test
 
 ### 27. Completions / complete
-**Status**: ⏳ Pending
+**Status**: ✅ Completed
 
-The MCP spec defines `completion/complete` for argument autocompletion.
+Implemented `completion/complete` method for argument autocompletion.
 
-**Tasks:**
-- Protocol types: `CompleteRequest`, `CompleteResult`, `CompleteList`
-- Handler for `completion/complete` method
-- Completion logic for tool names, argument values
-- Server capability flag
-- Integration test
+**What was done:**
+- **Protocol types**: `CompletionReference`, `CompleteParams`, `CompleteArgument`, `CompleteResult`
+- **Handler** in `src/handlers/completion.rs`: `handle_completion_complete()` with tool name completion
+- **Routing**: Added `completion/complete` to `KNOWN_METHODS` and `route_request()`
+- **Lazy loading**: Tool discovery triggered on first completion request if not yet loaded
+- **Prefix matching**: Case-insensitive substring matching for tool name completion
+- **Integration tests**: `test_completion_complete_tool_names` and `test_completion_complete_no_matches`
+
+**Usage example:**
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "completion/complete",
+  "params": {
+    "ref": { "type": "tool", "value": "list" },
+    "argument": { "name": "name", "value": "list" }
+  }
+}
+// Returns: {"values": ["list-files"], "total": 1, "has_more": false}
+```
 
 ### 28. Resource Templates
 **Status**: ⏳ Pending
