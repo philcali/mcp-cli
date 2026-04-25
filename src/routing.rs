@@ -7,7 +7,7 @@ pub async fn route_request(
     method: &str,
     params: &serde_json::Value,
     initialized: bool,
-    server: &crate::server::McpServer,
+    server: &mut crate::server::McpServer,
 ) -> anyhow::Result<serde_json::Value> {
     match method {
         "initialize" => crate::handlers::handle_initialize(server, params).await,
@@ -31,6 +31,9 @@ pub async fn route_request(
         "telemetry/event" => crate::handlers::handle_telemetry_event(server, params).await,
         "notifications/initialized" => Ok(json!({})),
         "completion/complete" => crate::handlers::handle_completion_complete(server, params).await,
+        "sampling/createMessage" => {
+            crate::handlers::handle_sampling_create_message(server, params).await
+        }
         _ => Err(anyhow::anyhow!("Unknown method: {}", method)),
     }
 }
@@ -64,6 +67,10 @@ pub const KNOWN_METHODS: &[(&str, &str)] = &[
     (
         "completion/complete",
         "Get autocompletion suggestions for arguments",
+    ),
+    (
+        "sampling/createMessage",
+        "Ask client to call LLM on the server's behalf",
     ),
 ];
 
