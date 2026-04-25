@@ -842,3 +842,113 @@ fn test_resources_updated_no_notification_for_unsubscribed_resource() {
         notifications
     );
 }
+
+#[test]
+fn test_completion_complete_tool_names() {
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let tools_dir = temp_dir.path();
+
+    // Create some tool scripts
+    for name in &["list-files", "delete-file", "get-status"] {
+        let script_path = tools_dir.join(name);
+        fs::write(&script_path, "#!/bin/sh\necho ok\n").unwrap();
+        #[cfg(unix)]
+        std::fs::set_permissions(
+            &script_path,
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+    }
+
+    let output = common::run_request_sequence_all(
+        Some(tools_dir.to_path_buf()),
+        None,
+        None,
+        vec![],
+        vec![
+            (
+                "initialize",
+                Some(&serde_json::json!({
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": { "name": "test-client", "version": "1.0" }
+                })),
+            ),
+            (
+                "completion/complete",
+                Some(&serde_json::json!({
+                    "ref": { "type": "tool", "value": "list" },
+                    "argument": { "name": "name", "value": "list" }
+                })),
+            ),
+        ],
+    );
+
+    // Parse the completion response (2nd result)
+    let completion_result = &output.results[1];
+    let values: Vec<&str> = completion_result["result"]["values"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect();
+
+    // Should match "list-files" since it starts with "list"
+    assert!(
+        values.contains(&"list-files"),
+        "Expected 'list-files' in completions, got: {:?}",
+        values
+    );
+}
+
+#[test]
+fn test_completion_complete_no_matches() {
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let tools_dir = temp_dir.path();
+
+    // Create some tool scripts
+    for name in &["list-files", "delete-file"] {
+        let script_path = tools_dir.join(name);
+        fs::write(&script_path, "#!/bin/sh\necho ok\n").unwrap();
+        #[cfg(unix)]
+        std::fs::set_permissions(
+            &script_path,
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+    }
+
+    let output = common::run_request_sequence_all(
+        Some(tools_dir.to_path_buf()),
+        None,
+        None,
+        vec![],
+        vec![
+            (
+                "initialize",
+                Some(&serde_json::json!({
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": { "name": "test-client", "version": "1.0" }
+                })),
+            ),
+            (
+                "completion/complete",
+                Some(&serde_json::json!({
+                    "ref": { "type": "tool", "value": "xyz" },
+                    "argument": { "name": "name", "value": "xyz" }
+                })),
+            ),
+        ],
+    );
+
+    let completion_result = &output.results[1];
+    let values: Vec<&str> = completion_result["result"]["values"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect();
+
+    assert!(values.is_empty(), "Expected no matches, got: {:?}", values);
+}
