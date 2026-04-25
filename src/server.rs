@@ -44,7 +44,14 @@ impl Default for PromptCacheConfig {
     }
 }
 
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, oneshot};
+
+/// Type for a pending sampling request: (request_id, sender for client response)
+type PendingSampling = (
+    String,
+    std::sync::Arc<tokio::sync::Mutex<Option<oneshot::Sender<serde_json::Value>>>>,
+);
+// use std::collections::HashMap;
 
 /// Server state and configuration.
 pub struct McpServer {
@@ -56,6 +63,8 @@ pub struct McpServer {
     /// Cached stdout handle to avoid repeated tokio::io::stdout() calls
     /// which can cause broken pipe errors in subprocess contexts.
     pub(crate) stdout: Option<std::sync::Arc<tokio::sync::Mutex<tokio::io::Stdout>>>,
+    /// Pending sampling request: (request_id, sender for client response)
+    pub(crate) pending_sampling: Option<PendingSampling>,
 }
 
 impl Default for McpServer {
@@ -80,6 +89,7 @@ impl McpServer {
             prompt_cache_config: PromptCacheConfig::default(),
             notification_tx: Some(std::sync::Arc::new(notification_tx)),
             stdout,
+            pending_sampling: None,
         }
     }
 
@@ -95,6 +105,22 @@ impl McpServer {
         }
     }
 
+    /// Set up a pending sampling request and return the oneshot sender
+    /// so the main loop can deliver the client's response back to the handler.
+    pub fn setup_pending_sampling(
+        &mut self,
+        request_id: String,
+    ) -> std::sync::Arc<tokio::sync::Mutex<Option<oneshot::Sender<serde_json::Value>>>> {
+        let sender = std::sync::Arc::new(tokio::sync::Mutex::new(None));
+        self.pending_sampling = Some((request_id, sender.clone()));
+        sender
+    }
+
+    /// Clear the pending sampling request.
+    pub fn clear_pending_sampling(&mut self) {
+        self.pending_sampling = None;
+    }
+
     pub fn with_prompt_cache_config(mut self, config: PromptCacheConfig) -> Self {
         self.prompt_cache_config = config;
         self
@@ -105,7 +131,7 @@ impl McpServer {
     }
 
     #[allow(dead_code)]
-    async fn handle_initialize(&self, params: &serde_json::Value) -> Result<serde_json::Value> {
+    async fn handle_initialize(&mut self, params: &serde_json::Value) -> Result<serde_json::Value> {
         handle_initialize(self, params).await
     }
 
@@ -196,6 +222,11 @@ impl McpServer {
         let mut experimental = self.capabilities.experimental.clone().unwrap_or_default();
         experimental.insert("telemetry".to_string(), json!(true));
         self.capabilities.experimental = Some(experimental);
+        self
+    }
+
+    pub fn enable_sampling(mut self) -> Self {
+        self.capabilities.sampling = Some(SamplingCapability { list_changed: None });
         self
     }
 
@@ -360,7 +391,6 @@ impl McpServer {
         let mut reader = BufReader::new(stdin).lines();
         info!("MCP server starting, waiting for messages...");
 
-        // Use cached stdout handle to avoid broken pipe errors
         let stdout = self.stdout.as_ref().unwrap().clone();
 
         loop {
@@ -370,32 +400,14 @@ impl McpServer {
                         continue;
                     }
                     debug!("Received message: {}", line);
-                    let is_initialize = serde_json::from_str::<serde_json::Value>(&line)
-                        .ok()
-                        .map(|v| v.get("method").and_then(|m| m.as_str()) == Some("initialize"))
-                        .unwrap_or(false);
-                    match self
-                        .handle_request(&line, self.state.is_initialized())
-                        .await
-                    {
-                        Ok(response) => {
-                            let mut out = stdout.lock().await;
-                            let _ = out.write_all(format!("{}\n", response).as_bytes()).await;
-                            let _ = out.flush().await;
-                            if !self.state.is_initialized() && is_initialize {
+                    match self.process_message(&line, &stdout).await {
+                        Ok(is_init) => {
+                            if !self.state.is_initialized() && is_init {
                                 self.state.set_initialized();
                             }
                         }
                         Err(e) => {
                             error!("Error processing message: {}", e);
-                            let err_resp = json!({ "jsonrpc": "2.0", "error": JsonRpcError::internal_error(&e.to_string()), "id": null });
-                            let mut out = stdout.lock().await;
-                            let _ = out
-                                .write_all(
-                                    format!("{}\n", serde_json::to_string(&err_resp).unwrap())
-                                        .as_bytes(),
-                                )
-                                .await;
                         }
                     }
                 }
@@ -430,20 +442,17 @@ impl McpServer {
             let mut term_signal = signal(SignalKind::terminate())?;
             let mut int_signal = signal(SignalKind::interrupt())?;
 
-            // Pass cached stdout to stdin loop
             let stdout = self.stdout.as_ref().unwrap().clone();
 
             info!("Daemon mode: waiting for SIGINT or SIGTERM...");
 
             loop {
                 tokio::select! {
-                    // Process stdin loop
-                    result = self.stdin_loop_daemon(&stdout) => {
+                    result = self.stdin_loop(&stdout) => {
                         if let Err(e) = result {
                             error!("stdin loop error: {}", e);
                         }
                     }
-                    // Wait for signals
                     _ = term_signal.recv() => {
                         info!("Received SIGTERM, exiting gracefully...");
                         break;
@@ -459,8 +468,52 @@ impl McpServer {
         Ok(())
     }
 
-    /// Internal stdin loop for daemon mode - processes lines until EOF.
-    async fn stdin_loop_daemon(
+    /// Process a single line from stdin: check for sampling responses, then handle as a request.
+    async fn process_message(
+        &mut self,
+        line: &str,
+        stdout: &std::sync::Arc<tokio::sync::Mutex<tokio::io::Stdout>>,
+    ) -> Result<bool> {
+        // Check if this is a response to a pending sampling request
+        if let Some((pending_id, sender)) = &self.pending_sampling
+            && let Ok(response) = serde_json::from_str::<serde_json::Value>(line)
+            && response.get("id").and_then(|v| v.as_str()) == Some(pending_id)
+        {
+            info!("Received sampling response from client");
+            let mut guard = sender.lock().await;
+            if let Some(tx) = guard.take() {
+                let _ = tx.send(response);
+            }
+            return Ok(false);
+        }
+
+        let is_initialize = serde_json::from_str::<serde_json::Value>(line)
+            .ok()
+            .map(|v| v.get("method").and_then(|m| m.as_str()) == Some("initialize"))
+            .unwrap_or(false);
+
+        match self.handle_request(line, self.state.is_initialized()).await {
+            Ok(response) => {
+                let mut out = stdout.lock().await;
+                let _ = out.write_all(format!("{}\n", response).as_bytes()).await;
+                let _ = out.flush().await;
+            }
+            Err(e) => {
+                error!("Error processing message: {}", e);
+                let err_resp = json!({ "jsonrpc": "2.0", "error": JsonRpcError::internal_error(&e.to_string()), "id": null });
+                let mut out = stdout.lock().await;
+                let _ = out
+                    .write_all(
+                        format!("{}\n", serde_json::to_string(&err_resp).unwrap()).as_bytes(),
+                    )
+                    .await;
+            }
+        }
+        Ok(is_initialize)
+    }
+
+    /// Internal stdin loop - processes lines until EOF, then returns.
+    async fn stdin_loop(
         &mut self,
         stdout: &std::sync::Arc<tokio::sync::Mutex<tokio::io::Stdout>>,
     ) -> Result<()> {
@@ -475,34 +528,7 @@ impl McpServer {
                         continue;
                     }
                     debug!("Received message: {}", line);
-                    let is_initialize = serde_json::from_str::<serde_json::Value>(&line)
-                        .ok()
-                        .map(|v| v.get("method").and_then(|m| m.as_str()) == Some("initialize"))
-                        .unwrap_or(false);
-                    match self
-                        .handle_request(&line, self.state.is_initialized())
-                        .await
-                    {
-                        Ok(response) => {
-                            let mut out = stdout.lock().await;
-                            let _ = out.write_all(format!("{}\n", response).as_bytes()).await;
-                            let _ = out.flush().await;
-                            if !self.state.is_initialized() && is_initialize {
-                                self.state.set_initialized();
-                            }
-                        }
-                        Err(e) => {
-                            error!("Error processing message: {}", e);
-                            let err_resp = json!({ "jsonrpc": "2.0", "error": JsonRpcError::internal_error(&e.to_string()), "id": null });
-                            let mut out = stdout.lock().await;
-                            let _ = out
-                                .write_all(
-                                    format!("{}\n", serde_json::to_string(&err_resp).unwrap())
-                                        .as_bytes(),
-                                )
-                                .await;
-                        }
-                    }
+                    self.process_message(&line, stdout).await?;
                 }
                 Ok(None) => {
                     // In daemon mode, when stdin closes (client disconnected),
@@ -517,7 +543,7 @@ impl McpServer {
         }
     }
 
-    async fn handle_request(&self, line: &str, initialized: bool) -> Result<String> {
+    async fn handle_request(&mut self, line: &str, initialized: bool) -> Result<String> {
         let request: JsonRpcRequest = serde_json::from_str(line)?;
         debug!(
             "Processing {} with id={}",
@@ -544,7 +570,7 @@ impl McpServer {
 
     #[allow(dead_code)]
     async fn route_request(
-        &self,
+        &mut self,
         method: &str,
         params: &serde_json::Value,
         initialized: bool,
@@ -694,6 +720,7 @@ pub struct ServerBuilder {
     prompts_dir: Option<std::path::PathBuf>,
     enable_logging: bool,
     enable_telemetry: bool,
+    enable_sampling: bool,
 }
 
 impl ServerBuilder {
@@ -710,6 +737,7 @@ impl ServerBuilder {
             prompts_dir: None,
             enable_logging: false,
             enable_telemetry: false,
+            enable_sampling: false,
         }
     }
     pub fn with_tools(mut self) -> Self {
@@ -739,6 +767,10 @@ impl ServerBuilder {
     }
     pub fn with_telemetry(mut self) -> Self {
         self.enable_telemetry = true;
+        self
+    }
+    pub fn with_sampling(mut self) -> Self {
+        self.enable_sampling = true;
         self
     }
     pub fn with_prompts_dir<P: Into<std::path::PathBuf>>(mut self, path: P) -> Self {
@@ -771,6 +803,9 @@ impl ServerBuilder {
         }
         if self.enable_telemetry {
             server = server.enable_telemetry();
+        }
+        if self.enable_sampling {
+            server = server.enable_sampling();
         }
         server
     }

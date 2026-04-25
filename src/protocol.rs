@@ -100,18 +100,18 @@ pub struct InitResult {
 }
 
 /// Client capabilities object.
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Default)]
 pub struct ClientCapabilities {
     #[serde(default)]
     pub experimental: Option<HashMap<String, serde_json::Value>>,
     #[serde(default)]
     pub roots: Option<RootsCapability>,
     #[serde(default)]
-    pub sampling: Option<HashMap<String, serde_json::Value>>,
+    pub sampling: Option<SamplingCapability>,
 }
 
 /// Roots capability from client.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct RootsCapability {
     pub list_changed: Option<bool>,
 }
@@ -140,6 +140,13 @@ pub struct PromptsCapability {
     pub list_changed: Option<bool>,
 }
 
+/// Sampling capability - indicates server supports LLM sampling.
+#[derive(Debug, Clone, Serialize, Default, Deserialize)]
+pub struct SamplingCapability {
+    #[serde(skip_serializing_if = "Option::is_none", rename = "listChanged")]
+    pub list_changed: Option<bool>,
+}
+
 /// Server capabilities object.
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct ServerCapabilities {
@@ -155,6 +162,8 @@ pub struct ServerCapabilities {
     pub roots: Option<RootsCapabilityServer>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<ToolsCapability>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sampling: Option<SamplingCapability>,
 }
 
 impl ServerCapabilities {
@@ -191,6 +200,12 @@ impl ServerCapabilities {
         self.roots = Some(RootsCapabilityServer {
             list_changed: false,
         });
+        self
+    }
+
+    /// Enable sampling capability (server can ask client to call LLM).
+    pub fn with_sampling(mut self) -> Self {
+        self.sampling = Some(SamplingCapability { list_changed: None });
         self
     }
 }
@@ -1185,6 +1200,59 @@ pub struct LogMessageResult {
     // MCP spec doesn't define any result fields for this method
     #[serde(skip_serializing)]
     _empty: (),
+}
+
+// ===========================================================================
+// SAMPLING SUPPORT
+// ===========================================================================
+
+/// Content for sampling messages.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum SamplingContent {
+    Text {
+        text: String,
+    },
+    #[serde(rename_all = "camelCase")]
+    Image {
+        data: String,
+        mime_type: String,
+    },
+}
+
+/// A message for sampling.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SamplingMessage {
+    pub role: MessageRole,
+    #[serde(rename = "content")]
+    pub content_value: SamplingContent,
+}
+
+/// Parameters for createMessage sampling request.
+#[derive(Debug, Deserialize)]
+pub struct CreateMessageParams {
+    pub messages: Vec<SamplingMessage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub system_prompt: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stop_sequences: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
+}
+
+/// Result of createMessage sampling.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct CreateMessageResult {
+    pub model: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stop_reason: Option<String>,
+    pub role: MessageRole,
+    #[serde(rename = "content")]
+    pub content_value: SamplingContent,
 }
 
 // ===========================================================================

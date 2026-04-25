@@ -12,7 +12,7 @@ use crate::auth::TokenCache;
 use crate::discovery::prompts::{PromptEntry, discover_prompts};
 use crate::discovery::resources::{ResourceEntry, discover_resources};
 use crate::discovery::tools::{ToolDefinition, discover_tools};
-use crate::protocol::{MemorySubscriptionManager, ResourceManager};
+use crate::protocol::{ClientCapabilities, MemorySubscriptionManager, ResourceManager};
 
 pub struct ServerState {
     pub name: String,
@@ -29,6 +29,8 @@ pub struct ServerState {
     pub initialized: AtomicBool,
     /// OAuth2 token cache shared across all requests
     pub oauth_cache: TokenCache,
+    /// Client's capabilities from the initialize request
+    pub client_capabilities: Option<ClientCapabilities>,
 }
 
 impl Clone for ServerState {
@@ -46,6 +48,7 @@ impl Clone for ServerState {
             subscription_manager: Arc::clone(&self.subscription_manager),
             initialized: AtomicBool::new(self.initialized.load(Ordering::SeqCst)),
             oauth_cache: self.oauth_cache.clone(),
+            client_capabilities: self.client_capabilities.clone(),
         }
     }
 }
@@ -68,6 +71,7 @@ impl ServerState {
             subscription_manager,
             initialized: AtomicBool::new(false),
             oauth_cache: TokenCache::new(),
+            client_capabilities: None,
         }
     }
 
