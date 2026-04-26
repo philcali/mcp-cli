@@ -5,9 +5,9 @@
 //! - `prompt_engine`: Prompt template engine and argument validation
 //! - `auth`: Authentication configuration helpers (business logic)
 
-pub mod types;
-pub mod prompt_engine;
 pub mod auth;
+pub mod prompt_engine;
+pub mod types;
 
 // Re-export types
 pub use types::*;
@@ -19,4 +19,4 @@ pub use prompt_engine::{PromptRenderError, PromptTemplateEngine, validate_prompt
 pub use auth::{load_tool_auth_config, parse_tool_auth_config};
 
 // Protocol version negotiation
-pub use types::{negotiate_protocol_version, protocol_error_to_json_rpc, InitError, JsonRpcError};
+pub use types::{InitError, JsonRpcError, negotiate_protocol_version, protocol_error_to_json_rpc};

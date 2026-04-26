@@ -1187,4 +1187,3 @@ pub fn protocol_error_to_json_rpc(error: &InitError) -> JsonRpcError {
         InitError::Configuration(msg) => JsonRpcError::internal_error(msg),
     }
 }
-

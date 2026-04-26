@@ -1043,9 +1043,7 @@ fn test_resource_templates_list() {
     let mut results: Vec<serde_json::Value> = Vec::new();
     for line in stdout.lines() {
         if line.trim_start().starts_with('{') {
-            results.push(
-                serde_json::from_str(line).expect("Failed to parse response"),
-            );
+            results.push(serde_json::from_str(line).expect("Failed to parse response"));
         }
     }
 

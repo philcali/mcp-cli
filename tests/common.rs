@@ -244,7 +244,8 @@ pub fn run_request_sequence_all(
         cmd.arg("--prompts-dir").arg(dir.to_str().unwrap());
     }
     if let Some(ref dir) = resource_templates_dir {
-        cmd.arg("--resource-templates-dir").arg(dir.to_str().unwrap());
+        cmd.arg("--resource-templates-dir")
+            .arg(dir.to_str().unwrap());
     }
 
     // Set environment variables
