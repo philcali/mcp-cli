@@ -160,6 +160,28 @@ pub async fn handle_resources_read(
     }
 }
 
+/// Resolve a concrete URI against a list of resource templates.
+/// Returns true if the URI matches any template pattern.
+fn uri_matches_template(
+    uri: &str,
+    templates: &[crate::discovery::resources::ResourceTemplateEntry],
+) -> bool {
+    templates.iter().any(|t| {
+        let template_pattern = &t.uri_template;
+        // Match simple patterns like "file://{path}" against concrete URIs
+        // e.g. "file://{path}" matches "file:///home/user/file.rs"
+        if !template_pattern.contains("{path}") {
+            // No placeholder — exact match only
+            return template_pattern == uri;
+        }
+        let parts: Vec<&str> = template_pattern.split("{path}").collect();
+        if parts.len() != 2 {
+            return false;
+        }
+        uri.starts_with(parts[0]) && uri.ends_with(parts[1])
+    })
+}
+
 /// Subscribe to resource change notifications.
 pub async fn handle_resources_subscribe(
     server: &crate::server::McpServer,
@@ -170,14 +192,19 @@ pub async fn handle_resources_subscribe(
 
     info!("Subscribing to resource: {}", subscribe_params.uri);
 
-    // Check if resource exists
+    // Check if resource exists in regular resources
     let resources = server.state.load_resources()?;
+    let resource_exists = resources.iter().any(|r| r.uri == subscribe_params.uri);
 
-    if !resources.iter().any(|r| r.uri == subscribe_params.uri) {
-        return Err(anyhow::anyhow!(
-            "Resource '{}' does not exist",
-            subscribe_params.uri
-        ));
+    // If not found in regular resources, check against template patterns
+    if !resource_exists {
+        let templates = server.state.load_resource_templates()?;
+        if !uri_matches_template(&subscribe_params.uri, &templates) {
+            return Err(anyhow::anyhow!(
+                "Resource '{}' does not exist",
+                subscribe_params.uri
+            ));
+        }
     }
 
     // Subscribe to the resource
@@ -205,14 +232,19 @@ pub async fn handle_resources_unsubscribe(
 
     info!("Unsubscribing from resource: {}", unsubscribe_params.uri);
 
-    // Check if resource exists first
+    // Check if resource exists in regular resources
     let resources = server.state.load_resources()?;
+    let resource_exists = resources.iter().any(|r| r.uri == unsubscribe_params.uri);
 
-    if !resources.iter().any(|r| r.uri == unsubscribe_params.uri) {
-        return Err(anyhow::anyhow!(
-            "Resource '{}' does not exist",
-            unsubscribe_params.uri
-        ));
+    // If not found in regular resources, check against template patterns
+    if !resource_exists {
+        let templates = server.state.load_resource_templates()?;
+        if !uri_matches_template(&unsubscribe_params.uri, &templates) {
+            return Err(anyhow::anyhow!(
+                "Resource '{}' does not exist",
+                unsubscribe_params.uri
+            ));
+        }
     }
 
     // Unsubscribe from the resource
