@@ -5,10 +5,22 @@ use serde_json::json;
 use std::path::{Path, PathBuf};
 use tracing::{debug, info, warn};
 
+use crate::protocol::ResourceTemplate;
+
 #[derive(Debug, Clone)]
 pub struct ResourceEntry {
     pub uri: String,
     pub resource_type: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub mime_type: Option<String>,
+    pub file_path: PathBuf,
+}
+
+/// Discovery entry for a resource template file.
+#[derive(Debug, Clone)]
+pub struct ResourceTemplateEntry {
+    pub uri_template: String,
     pub name: String,
     pub description: Option<String>,
     pub mime_type: Option<String>,
@@ -80,6 +92,74 @@ pub fn list_resources(resources: &[ResourceEntry]) -> serde_json::Value {
         .collect();
 
     json!({ "resources": resource_list })
+}
+
+/// Discover resource templates from a directory of .template.json files.
+pub fn discover_resource_templates(templates_dir: &Path) -> Result<Vec<ResourceTemplateEntry>> {
+    if !templates_dir.exists() {
+        warn!(
+            "Resource templates directory does not exist: {:?}",
+            templates_dir
+        );
+        return Ok(Vec::new());
+    }
+
+    debug!("Loading resource templates from: {:?}", templates_dir);
+    let mut templates = Vec::new();
+
+    for entry in std::fs::read_dir(templates_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        if ext != "json" || !stem.ends_with(".template") {
+            continue;
+        }
+
+        if !path.is_file() {
+            continue;
+        }
+
+        let content = std::fs::read_to_string(&path)
+            .with_context(|| format!("Failed to read template file: {:?}", path))?;
+
+        let template: ResourceTemplate = serde_json::from_str(&content)
+            .with_context(|| format!("Failed to parse template file: {:?}", path))?;
+
+        debug!(
+            "Found resource template: {} -> {}",
+            template.name, template.uri_template
+        );
+
+        templates.push(ResourceTemplateEntry {
+            uri_template: template.uri_template,
+            name: template.name,
+            description: template.description.clone(),
+            mime_type: template.mime_type.clone(),
+            file_path: path,
+        });
+    }
+
+    info!("Discovered {} resource templates", templates.len());
+    Ok(templates)
+}
+
+/// List resource templates as MCP protocol format.
+pub fn list_resource_templates(templates: &[ResourceTemplateEntry]) -> serde_json::Value {
+    let template_list: Vec<_> = templates
+        .iter()
+        .map(|t| {
+            json!({
+                "uriTemplate": t.uri_template,
+                "name": t.name,
+                "description": t.description,
+                "mimeType": t.mime_type,
+            })
+        })
+        .collect();
+
+    json!({ "templates": template_list })
 }
 
 fn mime_from_extension(ext: &str) -> String {

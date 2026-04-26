@@ -864,6 +864,7 @@ fn test_completion_complete_tool_names() {
         Some(tools_dir.to_path_buf()),
         None,
         None,
+        None,
         vec![],
         vec![
             (
@@ -922,6 +923,7 @@ fn test_completion_complete_no_matches() {
         Some(tools_dir.to_path_buf()),
         None,
         None,
+        None,
         vec![],
         vec![
             (
@@ -951,4 +953,235 @@ fn test_completion_complete_no_matches() {
         .collect();
 
     assert!(values.is_empty(), "Expected no matches, got: {:?}", values);
+}
+
+// ===========================================================================
+// RESOURCE TEMPLATES TESTS
+// ===========================================================================
+
+fn setup_test_templates() -> TempDir {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+
+    fs::write(
+        temp_dir.path().join("server.template.json"),
+        serde_json::json!({
+            "uriTemplate": "file://{path}",
+            "name": "server",
+            "description": "Server files",
+            "mimeType": "text/plain"
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    fs::write(
+        temp_dir.path().join("config.template.json"),
+        serde_json::json!({
+            "uriTemplate": "config://{name}.yaml",
+            "name": "config",
+            "description": "Configuration files",
+            "mimeType": "application/yaml"
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    temp_dir
+}
+
+#[test]
+fn test_resource_templates_list() {
+    let temp_dir = setup_test_templates();
+
+    let init_params = serde_json::json!({
+        "protocolVersion": "2024-11-05",
+        "capabilities": {},
+        "clientInfo": { "name": "test-client", "version": "1.0" }
+    });
+
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_mcp-cli"));
+    cmd.arg("--resource-templates-dir")
+        .arg(temp_dir.path().to_str().unwrap());
+
+    let mut child = cmd
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("Failed to spawn mcp-cli");
+
+    let requests = [
+        ("initialize", Some(&init_params)),
+        ("resources/templates/list", None),
+    ];
+
+    let mut stdin = child.stdin.take().unwrap();
+    for (i, (method, params)) in requests.iter().enumerate() {
+        let id = i as i64 + 1;
+        let req = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": method,
+        });
+
+        let request = if let Some(p) = params {
+            let mut r = req.as_object().unwrap().clone();
+            r.insert("params".to_string(), (*p).clone());
+            serde_json::Value::Object(r)
+        } else {
+            req
+        };
+
+        writeln!(stdin, "{}", request).unwrap();
+        stdin.flush().unwrap();
+    }
+    drop(stdin);
+
+    let output = child.wait_with_output().unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+
+    let mut results: Vec<serde_json::Value> = Vec::new();
+    for line in stdout.lines() {
+        if line.trim_start().starts_with('{') {
+            results.push(
+                serde_json::from_str(line).expect("Failed to parse response"),
+            );
+        }
+    }
+
+    assert_eq!(results.len(), 2);
+
+    let templates_result = &results[1]["result"];
+    let templates_array = templates_result["templates"].as_array().unwrap();
+    assert_eq!(templates_array.len(), 2);
+
+    // Sort by name since filesystem order is non-deterministic
+    let mut sorted_templates = templates_array.clone();
+    sorted_templates.sort_by_key(|t| t["name"].as_str().unwrap().to_string());
+
+    assert_eq!(sorted_templates[0]["name"], "config");
+    assert_eq!(sorted_templates[0]["uriTemplate"], "config://{name}.yaml");
+
+    assert_eq!(sorted_templates[1]["name"], "server");
+    assert_eq!(sorted_templates[1]["uriTemplate"], "file://{path}");
+    assert_eq!(sorted_templates[1]["mimeType"], "text/plain");
+}
+
+#[test]
+fn test_resource_templates_empty_dir() {
+    let temp_dir = TempDir::new().unwrap();
+
+    let init_params = serde_json::json!({
+        "protocolVersion": "2024-11-05",
+        "capabilities": {},
+        "clientInfo": { "name": "test-client", "version": "1.0" }
+    });
+
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_mcp-cli"));
+    cmd.arg("--resource-templates-dir")
+        .arg(temp_dir.path().to_str().unwrap());
+
+    let mut child = cmd
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("Failed to spawn mcp-cli");
+
+    let requests = [
+        ("initialize", Some(&init_params)),
+        ("resources/templates/list", None),
+    ];
+
+    let mut results: Vec<serde_json::Value> = Vec::new();
+    if let Some(mut stdin) = child.stdin.take() {
+        for (i, (method, params)) in requests.iter().enumerate() {
+            let id = i as i64 + 1;
+            let req = serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": method,
+            });
+
+            let request = if let Some(p) = params {
+                let mut r = req.as_object().unwrap().clone();
+                r.insert("params".to_string(), (*p).clone());
+                serde_json::Value::Object(r)
+            } else {
+                req
+            };
+
+            writeln!(stdin, "{}", request).unwrap();
+        }
+    }
+
+    if let Some(stdout) = child.stdout.take() {
+        for line in std::io::BufReader::new(stdout)
+            .lines()
+            .map_while(|l| l.ok())
+        {
+            if line.trim_start().starts_with('{') {
+                results.push(serde_json::from_str(&line).expect("Failed to parse response"));
+            }
+        }
+    }
+
+    child.wait().unwrap();
+
+    let templates_array = &results[1]["result"]["templates"];
+    assert_eq!(templates_array.as_array().unwrap().len(), 0);
+}
+
+#[test]
+fn test_resource_templates_in_capabilities() {
+    let temp_dir = setup_test_templates();
+
+    let init_params = serde_json::json!({
+        "protocolVersion": "2024-11-05",
+        "capabilities": {},
+        "clientInfo": { "name": "test-client", "version": "1.0" }
+    });
+
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_mcp-cli"));
+    cmd.arg("--resource-templates-dir")
+        .arg(temp_dir.path().to_str().unwrap());
+
+    let mut child = cmd
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("Failed to spawn mcp-cli");
+
+    let mut results: Vec<serde_json::Value> = Vec::new();
+    if let Some(mut stdin) = child.stdin.take() {
+        let req = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": init_params,
+        });
+        writeln!(stdin, "{}", req).unwrap();
+    }
+
+    if let Some(stdout) = child.stdout.take() {
+        for line in std::io::BufReader::new(stdout)
+            .lines()
+            .map_while(|l| l.ok())
+        {
+            if line.trim_start().starts_with('{') {
+                results.push(serde_json::from_str(&line).expect("Failed to parse response"));
+            }
+        }
+    }
+
+    child.wait().unwrap();
+
+    let caps = &results[0]["result"]["capabilities"]["resources"];
+    assert!(
+        caps.get("templateListChanged").is_some(),
+        "Expected templateListChanged in resources capability, got: {:?}",
+        caps
+    );
+    assert_eq!(caps["templateListChanged"], true);
 }

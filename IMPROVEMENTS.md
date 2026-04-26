@@ -462,27 +462,33 @@ Add client integration examples for:
 ## MCP Specification Compliance
 
 ### 25. ListChanged Notifications
-**Status**: 🔄 In Progress
+**Status**: ✅ Completed
 
 The MCP spec defines `notifications/tools/list_changed`, `notifications/resources/list_changed`, and `notifications/prompts/list_changed` for clients to stay in sync with server state changes.
 
-**Tasks:**
-- Emit `notifications/tools/list_changed` when tools directory changes (types exist in protocol.rs:378-399, never emitted)
-- Emit `notifications/resources/list_changed` when resources directory changes (types exist in protocol.rs:519-533, never emitted)
-- Emit `notifications/prompts/list_changed` when prompts directory changes
-- Emit `notifications/resources/updated` to subscribers when resource files change
+**What was done:**
+- Emit `notifications/tools/listChanged` when tools directory changes
+- Emit `notifications/resources/listChanged` when resources directory changes
+- Emit `notifications/prompts/listChanged` when prompts directory changes
+- Emit `notifications/resources/updated` to subscribers when subscribed resource files change
+- Unified file system watcher (`src/watcher.rs`) with separate `ToolWatcher`, `ResourceWatcher`, `PromptWatcher` implementations
+- Automatic cache invalidation on file modify/create/remove events
+- Integration tests: `test_resources_updated_notification_on_subscribed_resource`, `test_resources_updated_no_notification_for_unsubscribed_resource`
 
 ### 26. Sampling / createMessage
-**Status**: ⏳ Pending
+**Status**: ✅ Completed
 
-The MCP spec defines `sampling/createMessage` which lets the server ask the client to call an LLM on its behalf. Major capability gap.
+The MCP spec defines `sampling/createMessage` which lets the server ask the client to call an LLM on its behalf.
 
-**Tasks:**
-- Protocol types: `CreateMessageRequest`, `SamplingMessage`, `CreateMessageResult`
-- Client capabilities detection
-- Handler that sends request to client and awaits response
-- Server capability flag
-- Integration test
+**What was done:**
+- **Protocol types**: `SamplingCapability`, `SamplingMessage`, `SamplingContent` (Text/Image), `CreateMessageParams`, `CreateMessageResult`
+- **Proxy mode**: server writes sampling request to stdout, reads client response via stdin
+- **Oneshot channel** for request-response correlation via `pending_sampling` field on `McpServer`
+- **Client capability detection** via stored `client_capabilities` from init handshake
+- **Handler** in `src/handlers/sampling.rs`: `handle_sampling_create_message()`
+- **Routing**: added `sampling/createMessage` to `KNOWN_METHODS` and `route_request()`
+- **Server capability flag**: `enable_sampling()` builder method
+- **Server deduplication**: extracted shared `process_message()` logic used by both `run()` (one-shot) and `run_daemon()` modes
 
 ### 27. Completions / complete
 **Status**: ✅ Completed
@@ -511,12 +517,12 @@ Implemented `completion/complete` method for argument autocompletion.
 ```
 
 ### 28. Resource Templates
-**Status**: ⏳ Pending
+**Status**: ✅ Completed
 
 `ResourceTemplate` type exists in protocol.rs but is never used.
 
-**Tasks:**
-- Implement `resources/templates/list` method
+**What was done:**
+- Implemented `resources/templates/list` method
 - Discover resource templates from resources directory
 - Advertise `templates` in resources capability
 - Integration test

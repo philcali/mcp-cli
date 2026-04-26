@@ -1,8 +1,15 @@
-//! MCP protocol types and JSON-RPC message definitions.
+//! MCP protocol type definitions.
+//!
+//! This module contains all pure data types for the MCP protocol,
+//! including JSON-RPC messages, capability structures, and domain-specific types.
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
+
+// ===========================================================================
+// JSON-RPC MESSAGE TYPES
+// ===========================================================================
 
 /// Base JSON-RPC 2.0 request structure.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -76,6 +83,10 @@ impl JsonRpcError {
         }
     }
 }
+
+// ===========================================================================
+// INITIALIZATION
+// ===========================================================================
 
 /// Initialize request parameters from client.
 #[derive(Debug, Deserialize, Default)]
@@ -179,7 +190,27 @@ impl ServerCapabilities {
     }
 
     pub fn with_resources(mut self, list_changed: bool) -> Self {
-        self.resources = Some(ResourcesCapability { list_changed });
+        self.resources = Some(ResourcesCapability {
+            list_changed,
+            template_list_changed: None,
+        });
+        self
+    }
+
+    /// Enable resource templates capability (server supports resource templates).
+    pub fn with_resource_templates(mut self) -> Self {
+        match &mut self.resources {
+            Some(cap) => {
+                cap.list_changed = true;
+                cap.template_list_changed = Some(true);
+            }
+            None => {
+                self.resources = Some(ResourcesCapability {
+                    list_changed: true,
+                    template_list_changed: Some(true),
+                });
+            }
+        }
         self
     }
 
@@ -237,11 +268,16 @@ impl Root {
     }
 }
 
-/// Resource read result.
+/// Resource capability structure.
 #[derive(Debug, Clone, Serialize)]
 pub struct ResourcesCapability {
     #[serde(rename = "listChanged")]
     pub list_changed: bool,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        rename = "templateListChanged"
+    )]
+    pub template_list_changed: Option<bool>,
 }
 
 /// Implementation info (client or server).
@@ -250,6 +286,10 @@ pub struct Implementation {
     pub name: String,
     pub version: String,
 }
+
+// ===========================================================================
+// TOOLS
+// ===========================================================================
 
 /// Tool structure.
 #[derive(Debug, Clone, Serialize)]
@@ -453,6 +493,10 @@ impl From<Tool> for ToolListItem {
     }
 }
 
+// ===========================================================================
+// RESOURCES
+// ===========================================================================
+
 /// Resource structure.
 #[derive(Debug, Clone, Serialize)]
 pub struct Resource {
@@ -467,11 +511,12 @@ pub struct Resource {
 }
 
 /// Resource template structure.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ResourceTemplate {
     pub uri_template: String,
-    #[serde(rename = "type")]
-    pub resource_type: String,
+    #[serde(rename = "type", default, skip_serializing_if = "Option::is_none")]
+    pub resource_type: Option<String>,
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
@@ -515,6 +560,25 @@ pub enum ResourceContents {
         data: String,
         mime_type: String,
     },
+}
+
+impl ResourceContents {
+    pub fn text(uri: &str, text: &str) -> Self {
+        Self::Text(TextResourceContents {
+            uri_value: uri.to_string(),
+            text_value: text.to_string(),
+            mime_type: None,
+        })
+    }
+
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn blob(uri: &str, data: String, mime_type: &str) -> Self {
+        Self::Blob {
+            uri: uri.to_string(),
+            data,
+            mime_type: mime_type.to_string(),
+        }
+    }
 }
 
 // ===========================================================================
@@ -704,24 +768,9 @@ impl ResourceManager for MemorySubscriptionManager {
     }
 }
 
-impl ResourceContents {
-    pub fn text(uri: &str, text: &str) -> Self {
-        Self::Text(TextResourceContents {
-            uri_value: uri.to_string(),
-            text_value: text.to_string(),
-            mime_type: None,
-        })
-    }
-
-    #[allow(clippy::needless_pass_by_value)]
-    pub fn blob(uri: &str, data: String, mime_type: &str) -> Self {
-        Self::Blob {
-            uri: uri.to_string(),
-            data,
-            mime_type: mime_type.to_string(),
-        }
-    }
-}
+// ===========================================================================
+// PROMPT SUPPORT
+// ===========================================================================
 
 /// Prompt structure.
 #[derive(Debug, Clone, Serialize)]
@@ -740,71 +789,6 @@ pub struct PromptArgument {
     pub required: Option<bool>,
 }
 
-/// Authentication strategy for a tool.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AuthStrategy {
-    /// Environment variable injection (e.g., GITHUB_TOKEN)
-    EnvVar,
-    /// OAuth2 flow with token caching - EXPERIMENTAL
-    #[serde(rename = "oauth2")]
-    OAuth2,
-    /// API key passed as custom header - EXPERIMENTAL
-    #[serde(rename = "api_key_header")]
-    ApiKeyHeader,
-    /// Bearer token in Authorization header - EXPERIMENTAL
-    #[serde(rename = "bearer_token")]
-    BearerToken,
-}
-
-/// OAuth2 configuration for a tool.
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct OAuthConfig {
-    pub client_id_env: String,
-    pub token_url: String,
-    #[serde(default)]
-    pub scopes: Vec<String>,
-}
-
-/// Authentication configuration for a tool.
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct ToolAuthConfig {
-    /// The authentication strategy used by this tool
-    #[serde(default = "default_strategy")]
-    pub strategy: AuthStrategy,
-    /// Environment variables required for authentication
-    #[serde(default)]
-    pub required_env_vars: Vec<String>,
-    /// OAuth2 configuration (only used if strategy is oauth2)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub oauth_config: Option<OAuthConfig>,
-}
-
-fn default_strategy() -> AuthStrategy {
-    AuthStrategy::EnvVar // Default to simple env var injection
-}
-
-/// Load tool auth config from a file path.
-pub fn load_tool_auth_config(path: &std::path::Path) -> anyhow::Result<Option<ToolAuthConfig>> {
-    if !path.exists() {
-        return Ok(None);
-    }
-
-    let content = std::fs::read_to_string(path)?;
-    let config: ToolAuthConfig = serde_json::from_str(&content)?;
-    Ok(Some(config))
-}
-
-/// Load tool auth config from JSON string.
-pub fn parse_tool_auth_config(json: &str) -> anyhow::Result<ToolAuthConfig> {
-    let config: ToolAuthConfig = serde_json::from_str(json)?;
-    Ok(config)
-}
-
-// ===========================================================================
-// PROMPT SUPPORT
-// ===========================================================================
-
 /// Prompt template file structure.
 #[derive(Debug, Clone, Deserialize)]
 pub struct PromptFile {
@@ -819,11 +803,11 @@ pub struct PromptFile {
 
 impl PromptFile {
     /// Convert to internal representation with PromptMessage.
-    pub fn to_messages(&self) -> Vec<crate::protocol::PromptMessage> {
+    pub fn to_messages(&self) -> Vec<PromptMessage> {
         self.messages
             .iter()
             .flatten()
-            .map(|msg| crate::protocol::PromptMessage {
+            .map(|msg| PromptMessage {
                 role: msg.role.clone(),
                 content_value: msg.content.clone(),
             })
@@ -932,199 +916,6 @@ impl GetPromptResult {
             messages,
         }
     }
-}
-
-/// Simple template engine for prompt rendering.
-#[derive(Debug, Default)]
-pub struct PromptTemplateEngine;
-
-impl PromptTemplateEngine {
-    /// Create a new template engine.
-    pub fn new() -> Self {
-        Self
-    }
-
-    /// Render a template with the given arguments.
-    /// Supports: {{var}}, {{#include path}}, {{#env VAR}}
-    pub fn render(
-        &self,
-        template: &str,
-        args: &HashMap<String, serde_json::Value>,
-        base_dir: Option<&std::path::Path>,
-    ) -> Result<String, PromptRenderError> {
-        let mut result = String::new();
-        let chars: Vec<char> = template.chars().collect();
-        let len = chars.len();
-        let mut i = 0;
-
-        while i < len {
-            if chars[i] == '{' && i + 1 < len && chars[i + 1] == '#' {
-                // Directive: {{#...}}
-                let (directive, end_i) = self.parse_directive(&chars, i)?;
-                result.push_str(&self.execute_directive(directive, args, base_dir)?);
-                i = end_i;
-            } else if chars[i] == '{' && i + 1 < len && chars[i + 1] == '{' {
-                // Variable: {{var}}
-                let (var_name, end_i) = self.parse_variable(&chars, i)?;
-                let value = self.resolve_variable(&var_name, args);
-                result.push_str(&value);
-                i = end_i;
-            } else {
-                // Regular character
-                result.push(chars[i]);
-                i += 1;
-            }
-        }
-
-        Ok(result)
-    }
-
-    /// Parse a directive ({{#include ...}} or {{#env VAR}}).
-    fn parse_directive(
-        &self,
-        chars: &[char],
-        start: usize,
-    ) -> Result<(String, usize), PromptRenderError> {
-        let mut i = start + 2; // Skip {{#
-        while i < chars.len() && (chars[i] == '}' || !chars[i].is_whitespace()) {
-            i += 1;
-        }
-
-        let _directive_end = i;
-        while i < chars.len() && chars[i] != '}' {
-            i += 1;
-        }
-
-        if i >= chars.len() {
-            return Err(PromptRenderError::UnclosedDirective);
-        }
-
-        let content: String = chars[start + 2..i].iter().collect();
-        Ok((content, i + 1))
-    }
-
-    /// Parse a variable reference ({{var}}).
-    fn parse_variable(
-        &self,
-        chars: &[char],
-        start: usize,
-    ) -> Result<(String, usize), PromptRenderError> {
-        let mut i = start + 2; // Skip {{
-        while i < chars.len() && chars[i] != '}' {
-            i += 1;
-        }
-
-        if i >= chars.len() {
-            return Err(PromptRenderError::UnclosedVariable);
-        }
-
-        let name: String = chars[start + 2..i].iter().collect();
-
-        // Skip the closing }}
-        if i + 1 < chars.len() && chars[i + 1] == '}' {
-            Ok((name, i + 2))
-        } else {
-            Ok((name, i + 1))
-        }
-    }
-
-    /// Execute a directive.
-    fn execute_directive(
-        &self,
-        directive: String,
-        _args: &HashMap<String, serde_json::Value>,
-        base_dir: Option<&std::path::Path>,
-    ) -> Result<String, PromptRenderError> {
-        let parts: Vec<&str> = directive.split_whitespace().collect();
-        if parts.is_empty() {
-            return Err(PromptRenderError::InvalidDirective(directive));
-        }
-
-        match parts[0] {
-            "include" => {
-                let path_str = parts
-                    .get(1)
-                    .ok_or_else(|| PromptRenderError::MissingArgument("include".to_string()))?;
-                let base = base_dir.unwrap_or(std::path::Path::new("."));
-                let full_path = base.join(path_str);
-                std::fs::read_to_string(&full_path).map_err(|e| PromptRenderError::FileReadError {
-                    path: path_str.to_string(),
-                    error: e.to_string(),
-                })
-            }
-            "env" => {
-                let var_name = parts
-                    .get(1)
-                    .ok_or_else(|| PromptRenderError::MissingArgument("env".to_string()))?;
-                std::env::var(var_name)
-                    .map_err(|_| PromptRenderError::EnvVarNotFound(var_name.to_string()))
-            }
-            _ => Err(PromptRenderError::UnknownDirective(parts[0].to_string())),
-        }
-    }
-
-    /// Resolve a variable from arguments.
-    fn resolve_variable(&self, name: &str, args: &HashMap<String, serde_json::Value>) -> String {
-        match args.get(name) {
-            Some(serde_json::Value::String(s)) => s.clone(),
-            Some(v) => v.to_string(),
-            None => format!("{{{{{}}}}}", name), // Keep as literal if not found
-        }
-    }
-}
-
-/// Error type for template rendering.
-#[derive(Debug, Clone)]
-pub enum PromptRenderError {
-    UnclosedDirective,
-    UnclosedVariable,
-    InvalidDirective(String),
-    UnknownDirective(String),
-    MissingArgument(String),
-    FileReadError { path: String, error: String },
-    EnvVarNotFound(String),
-}
-
-impl std::fmt::Display for PromptRenderError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            PromptRenderError::UnclosedDirective => write!(f, "Unclosed directive"),
-            PromptRenderError::UnclosedVariable => write!(f, "Unclosed variable"),
-            PromptRenderError::InvalidDirective(d) => write!(f, "Invalid directive: {}", d),
-            PromptRenderError::UnknownDirective(d) => write!(f, "Unknown directive: {}", d),
-            PromptRenderError::MissingArgument(d) => {
-                write!(f, "Missing argument for directive: {}", d)
-            }
-            PromptRenderError::FileReadError { path, error } => {
-                write!(f, "Failed to read file '{}': {}", path, error)
-            }
-            PromptRenderError::EnvVarNotFound(var) => {
-                write!(f, "Environment variable '{}' not found", var)
-            }
-        }
-    }
-}
-
-impl std::error::Error for PromptRenderError {}
-
-/// Validate prompt arguments against required parameters.
-pub fn validate_prompt_arguments(
-    args: &HashMap<String, serde_json::Value>,
-    required_args: &[PromptArgument],
-) -> Result<(), String> {
-    let required_names: Vec<&str> = required_args
-        .iter()
-        .filter(|a| a.required == Some(true))
-        .map(|a| a.name.as_str())
-        .collect();
-
-    for name in required_names {
-        if !args.contains_key(name) {
-            return Err(format!("Missing required argument: {}", name));
-        }
-    }
-
-    Ok(())
 }
 
 // ===========================================================================
@@ -1256,25 +1047,59 @@ pub struct CreateMessageResult {
 }
 
 // ===========================================================================
+// AUTH CONFIGURATION
+// ===========================================================================
+
+/// Authentication strategy for a tool.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthStrategy {
+    /// Environment variable injection (e.g., GITHUB_TOKEN)
+    EnvVar,
+    /// OAuth2 flow with token caching - EXPERIMENTAL
+    #[serde(rename = "oauth2")]
+    OAuth2,
+    /// API key passed as custom header - EXPERIMENTAL
+    #[serde(rename = "api_key_header")]
+    ApiKeyHeader,
+    /// Bearer token in Authorization header - EXPERIMENTAL
+    #[serde(rename = "bearer_token")]
+    BearerToken,
+}
+
+/// OAuth2 configuration for a tool.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct OAuthConfig {
+    pub client_id_env: String,
+    pub token_url: String,
+    #[serde(default)]
+    pub scopes: Vec<String>,
+}
+
+/// Authentication configuration for a tool.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ToolAuthConfig {
+    /// The authentication strategy used by this tool
+    #[serde(default = "default_strategy")]
+    pub strategy: AuthStrategy,
+    /// Environment variables required for authentication
+    #[serde(default)]
+    pub required_env_vars: Vec<String>,
+    /// OAuth2 configuration (only used if strategy is oauth2)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oauth_config: Option<OAuthConfig>,
+}
+
+fn default_strategy() -> AuthStrategy {
+    AuthStrategy::EnvVar // Default to simple env var injection
+}
+
+// ===========================================================================
 // PROTOCOL VERSION SUPPORT
 // ===========================================================================
 
 /// Supported MCP protocol versions (in order of preference).
 pub const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &["2024-11-05", "2024-10-07"];
-
-/// Protocol version negotiation result.
-#[derive(Debug, Clone, PartialEq)]
-pub enum VersionNegotiationResult {
-    /// Version is supported and will be used
-    Supported(String),
-    /// Version starts with "2024-" but is not explicitly in our list
-    Compatible(String),
-    /// Version is not a valid 2024-x protocol version
-    Unsupported {
-        received: String,
-        supported: Vec<String>,
-    },
-}
 
 /// Negotiate protocol version with client.
 /// Returns the version to use if negotiation succeeds.
@@ -1302,6 +1127,20 @@ pub fn negotiate_protocol_version(client_version: &str) -> VersionNegotiationRes
             .map(|s| s.to_string())
             .collect(),
     }
+}
+
+/// Protocol version negotiation result.
+#[derive(Debug, Clone, PartialEq)]
+pub enum VersionNegotiationResult {
+    /// Version is supported and will be used
+    Supported(String),
+    /// Version starts with "2024-" but is not explicitly in our list
+    Compatible(String),
+    /// Version is not a valid 2024-x protocol version
+    Unsupported {
+        received: String,
+        supported: Vec<String>,
+    },
 }
 
 /// Error type for protocol initialization failures.
@@ -1348,3 +1187,4 @@ pub fn protocol_error_to_json_rpc(error: &InitError) -> JsonRpcError {
         InitError::Configuration(msg) => JsonRpcError::internal_error(msg),
     }
 }
+

@@ -429,3 +429,106 @@ impl Default for EventManager {
         Self::new()
     }
 }
+
+/// Watcher for resource template files.
+pub struct ResourceTemplateWatcher {
+    on_change: CacheInvalidateCallback,
+    on_list_changed: ListChangedCallback,
+}
+
+impl ResourceTemplateWatcher {
+    pub fn new<F, G>(on_change: F, on_list_changed: G) -> Self
+    where
+        F: Fn() + Send + Sync + 'static,
+        G: Fn() + Send + Sync + 'static,
+    {
+        Self {
+            on_change: Box::new(on_change),
+            on_list_changed: Box::new(on_list_changed),
+        }
+    }
+}
+
+impl FileSystemWatcher for ResourceTemplateWatcher {
+    fn start_watching(
+        dir: PathBuf,
+        config: WatchConfig,
+        _on_change: CacheInvalidateCallback,
+        _on_list_changed: ListChangedCallback,
+    ) -> Result<std::sync::Arc<tokio::task::JoinHandle<()>>> {
+        if !config.watch_for_changes {
+            warn!("Resource template file watching is disabled in configuration");
+            return Ok(std::sync::Arc::new(tokio::task::spawn(async {})));
+        }
+
+        let watcher = ResourceTemplateWatcher::new(_on_change, _on_list_changed);
+        let watch_config = config.clone();
+
+        let handle = tokio::task::spawn(async move {
+            Self::watch_directory(dir, &watcher, watch_config).await;
+        });
+
+        Ok(std::sync::Arc::new(handle))
+    }
+
+    fn on_change(&self) {
+        debug!("Resource template cache invalidated due to file change");
+        (self.on_change)();
+    }
+
+    fn on_list_changed(&self) {
+        debug!("Resource template list changed notification emitted");
+        (self.on_list_changed)();
+    }
+
+    fn on_updated(&self, _path: &std::path::Path) {}
+}
+
+impl ResourceTemplateWatcher {
+    async fn watch_directory(dir: PathBuf, watcher: &ResourceTemplateWatcher, config: WatchConfig) {
+        if !config.watch_for_changes {
+            warn!("Resource template file watching is disabled in configuration");
+            return;
+        }
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<notify::Result<Event>>(100);
+
+        let mut watcher_instance =
+            match notify::recommended_watcher(move |res: notify::Result<Event>| {
+                let _ = tx.blocking_send(res);
+            }) {
+                Ok(w) => w,
+                Err(e) => {
+                    error!("Failed to create resource template file watcher: {}", e);
+                    return;
+                }
+            };
+
+        if let Err(e) = watcher_instance.watch(&dir, RecursiveMode::Recursive) {
+            error!(
+                "Failed to watch resource templates directory {:?}: {}",
+                dir, e
+            );
+            return;
+        }
+
+        info!("Started watching resource templates directory: {:?}", dir);
+
+        while let Some(res) = rx.recv().await {
+            match res {
+                Ok(event) => {
+                    if event.kind.is_modify() || event.kind.is_create() || event.kind.is_remove() {
+                        for path in &event.paths {
+                            info!("Resource template file change detected: {:?}", path);
+                        }
+                        watcher.on_change();
+                        watcher.on_list_changed();
+                    }
+                }
+                Err(e) => {
+                    error!("Watch error: {}", e);
+                }
+            }
+        }
+    }
+}

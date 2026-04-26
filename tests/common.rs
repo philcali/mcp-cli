@@ -228,6 +228,7 @@ pub fn run_request_sequence_all(
     tools_dir: Option<PathBuf>,
     resources_dir: Option<PathBuf>,
     prompts_dir: Option<PathBuf>,
+    resource_templates_dir: Option<PathBuf>,
     env_vars: Vec<(&str, &str)>,
     requests: Vec<(&str, Option<&serde_json::Value>)>,
 ) -> RequestOutput {
@@ -241,6 +242,9 @@ pub fn run_request_sequence_all(
     }
     if let Some(ref dir) = prompts_dir {
         cmd.arg("--prompts-dir").arg(dir.to_str().unwrap());
+    }
+    if let Some(ref dir) = resource_templates_dir {
+        cmd.arg("--resource-templates-dir").arg(dir.to_str().unwrap());
     }
 
     // Set environment variables

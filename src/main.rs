@@ -24,6 +24,10 @@ struct Cli {
     #[arg(long, short)]
     prompts_dir: Option<std::path::PathBuf>,
 
+    /// Directory path for resource templates (.template.json files)
+    #[arg(long)]
+    resource_templates_dir: Option<std::path::PathBuf>,
+
     /// Enable logging capability for the server
     #[arg(long)]
     with_logging: bool,
@@ -52,6 +56,7 @@ async fn main() -> Result<()> {
     let tools_dir = cli.tools_dir.clone();
     let resources_dir = cli.resources_dir.clone();
     let prompts_dir = cli.prompts_dir.clone();
+    let resource_templates_dir = cli.resource_templates_dir.clone();
 
     if let Some(ref td) = tools_dir {
         info!("Using tools directory: {:?}", td);
@@ -67,6 +72,13 @@ async fn main() -> Result<()> {
         info!("Using prompts directory: {:?}", pd);
         builder = builder.with_prompts();
         builder = builder.with_prompts_dir(pd.clone());
+    }
+
+    if let Some(ref td) = resource_templates_dir {
+        info!("Using resource templates directory: {:?}", td);
+        builder = builder
+            .with_resource_templates()
+            .with_resource_templates_dir(td.clone());
     }
 
     if cli.with_logging {
@@ -104,6 +116,16 @@ async fn main() -> Result<()> {
                 std::mem::forget(handle);
             }
             Err(e) => warn!("Failed to start resource watcher: {}", e),
+        }
+    }
+
+    if resource_templates_dir.is_some() {
+        match srv.start_resource_templates_watcher() {
+            Ok(handle) => {
+                info!("Started resource templates watcher");
+                std::mem::forget(handle);
+            }
+            Err(e) => warn!("Failed to start resource templates watcher: {}", e),
         }
     }
 

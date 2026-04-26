@@ -17,8 +17,8 @@ pub use logging::handle_logging_messages;
 pub use ping::handle_ping;
 pub use prompts::{handle_prompts_get, handle_prompts_list};
 pub use resources::{
-    handle_resources_list, handle_resources_read, handle_resources_subscribe,
-    handle_resources_unsubscribe,
+    handle_resource_templates_list, handle_resources_list, handle_resources_read,
+    handle_resources_subscribe, handle_resources_unsubscribe,
 };
 pub use sampling::handle_sampling_create_message;
 pub use telemetry::handle_telemetry_event;
