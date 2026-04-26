@@ -31,6 +31,10 @@ pub struct ServerState {
     pub oauth_cache: TokenCache,
     /// Client's capabilities from the initialize request
     pub client_capabilities: Option<ClientCapabilities>,
+    /// Resource templates directory
+    pub resource_templates_dir: Option<PathBuf>,
+    /// Cached resource templates
+    pub cached_resource_templates: Mutex<Vec<crate::discovery::resources::ResourceTemplateEntry>>,
 }
 
 impl Clone for ServerState {
@@ -49,6 +53,10 @@ impl Clone for ServerState {
             initialized: AtomicBool::new(self.initialized.load(Ordering::SeqCst)),
             oauth_cache: self.oauth_cache.clone(),
             client_capabilities: self.client_capabilities.clone(),
+            resource_templates_dir: self.resource_templates_dir.clone(),
+            cached_resource_templates: Mutex::new(
+                self.cached_resource_templates.lock().unwrap().clone(),
+            ),
         }
     }
 }
@@ -72,6 +80,8 @@ impl ServerState {
             initialized: AtomicBool::new(false),
             oauth_cache: TokenCache::new(),
             client_capabilities: None,
+            resource_templates_dir: None,
+            cached_resource_templates: Mutex::new(Vec::new()),
         }
     }
 
@@ -150,7 +160,21 @@ impl ServerState {
         self.cached_tools.lock().unwrap().clear();
         self.cached_resources.lock().unwrap().clear();
         self.cached_prompts.lock().unwrap().clear();
+        self.cached_resource_templates.lock().unwrap().clear();
         info!("All caches invalidated");
         Ok(())
+    }
+
+    pub fn load_resource_templates(
+        &self,
+    ) -> Result<Vec<crate::discovery::resources::ResourceTemplateEntry>, anyhow::Error> {
+        let dir = match &self.resource_templates_dir {
+            Some(p) => p,
+            None => {
+                info!("No resource templates directory configured");
+                return Ok(Vec::new());
+            }
+        };
+        crate::discovery::resources::discover_resource_templates(dir)
     }
 }

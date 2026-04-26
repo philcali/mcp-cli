@@ -138,6 +138,7 @@ fn test_auth_env_var_strategy_integration() {
         Some(temp_dir.path().to_path_buf()), // tools_dir
         None,
         None,
+        None,
         vec![(&env_name, "secret123")],
         vec![
             ("initialize", Some(&init_params)),
@@ -197,6 +198,7 @@ fn test_auth_bearer_strategy_integration() {
         Some(temp_dir.path().to_path_buf()), // tools_dir
         None,
         None,
+        None,
         vec![(&env_name, "my-bearer-token")],
         vec![
             ("initialize", Some(&init_params)),
@@ -247,6 +249,7 @@ fn test_auth_api_key_strategy_integration() {
         Some(temp_dir.path().to_path_buf()), // tools_dir
         None,
         None,
+        None,
         vec![(&env_name, "api-key-value")],
         vec![
             ("initialize", Some(&init_params)),
@@ -294,6 +297,7 @@ fn test_auth_missing_credentials_fails() {
 
     let output = run_request_sequence_all(
         Some(temp_dir.path().to_path_buf()), // tools_dir
+        None,
         None,
         None,
         vec![],
@@ -350,6 +354,7 @@ fn test_auth_flat_auth_file() {
 
     let output = run_request_sequence_all(
         Some(temp_dir.path().to_path_buf()), // tools_dir
+        None,
         None,
         None,
         vec![(&env_name, "flat_secret")],

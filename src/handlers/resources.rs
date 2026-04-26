@@ -229,3 +229,29 @@ pub async fn handle_resources_unsubscribe(
 
     Ok(json!({}))
 }
+
+/// List available resource templates.
+pub async fn handle_resource_templates_list(
+    server: &crate::server::McpServer,
+) -> Result<serde_json::Value> {
+    let mut cached = server.state.cached_resource_templates.lock().unwrap();
+
+    // Load templates from directory if not already cached and directory is configured
+    if cached.is_empty() && server.state.resource_templates_dir.is_some() {
+        *cached = server.load_resource_templates()?;
+    }
+
+    let template_list: Vec<_> = cached
+        .iter()
+        .map(|t| {
+            json!({
+                "uriTemplate": t.uri_template,
+                "name": t.name,
+                "description": t.description,
+                "mimeType": t.mime_type,
+            })
+        })
+        .collect();
+
+    Ok(json!({ "templates": template_list }))
+}

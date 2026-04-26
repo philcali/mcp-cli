@@ -201,7 +201,10 @@ impl McpServer {
     }
 
     pub fn enable_resources(mut self, list_changed: bool) -> Self {
-        self.capabilities.resources = Some(ResourcesCapability { list_changed });
+        self.capabilities.resources = Some(ResourcesCapability {
+            list_changed,
+            template_list_changed: None,
+        });
         self
     }
 
@@ -228,6 +231,72 @@ impl McpServer {
     pub fn enable_sampling(mut self) -> Self {
         self.capabilities.sampling = Some(SamplingCapability { list_changed: None });
         self
+    }
+
+    pub fn enable_resource_templates(mut self) -> Self {
+        match &mut self.capabilities.resources {
+            Some(cap) => {
+                cap.list_changed = true;
+                cap.template_list_changed = Some(true);
+            }
+            None => {
+                self.capabilities.resources = Some(ResourcesCapability {
+                    list_changed: true,
+                    template_list_changed: Some(true),
+                });
+            }
+        }
+        self
+    }
+
+    pub fn enable_resource_templates_dir(mut self, path: PathBuf) -> Self {
+        let mut new_state = (*self.state).clone();
+        new_state.resource_templates_dir = Some(path);
+        self.state = std::sync::Arc::new(new_state);
+        self
+    }
+
+    pub fn load_resource_templates(
+        &self,
+    ) -> Result<Vec<crate::discovery::resources::ResourceTemplateEntry>, anyhow::Error> {
+        self.state.load_resource_templates()
+    }
+
+    pub fn start_resource_templates_watcher(
+        &self,
+    ) -> Result<std::sync::Arc<tokio::task::JoinHandle<()>>> {
+        let dir = match &self.state.resource_templates_dir {
+            Some(p) => p.clone(),
+            None => {
+                return Err(anyhow::anyhow!(
+                    "No resource templates directory configured"
+                ));
+            }
+        };
+        let state_clone = self.state.clone();
+        let notification_tx = self.notification_tx.clone();
+        crate::watcher::ResourceTemplateWatcher::start_watching(
+            dir,
+            WatchConfig {
+                watch_for_changes: true,
+            },
+            Box::new(move || {
+                state_clone
+                    .cached_resource_templates
+                    .lock()
+                    .unwrap()
+                    .clear();
+            }),
+            Box::new(move || {
+                if let Some(ref tx) = notification_tx {
+                    let msg = json!({
+                        "jsonrpc": "2.0",
+                        "method": "notifications/resources/templates/listChanged",
+                    });
+                    let _ = tx.send(msg.to_string());
+                }
+            }),
+        )
     }
 
     pub fn enable_prompts_dir(mut self, path: PathBuf) -> Self {
@@ -721,6 +790,8 @@ pub struct ServerBuilder {
     enable_logging: bool,
     enable_telemetry: bool,
     enable_sampling: bool,
+    enable_resource_templates: bool,
+    resource_templates_dir: Option<std::path::PathBuf>,
 }
 
 impl ServerBuilder {
@@ -738,6 +809,8 @@ impl ServerBuilder {
             enable_logging: false,
             enable_telemetry: false,
             enable_sampling: false,
+            enable_resource_templates: false,
+            resource_templates_dir: None,
         }
     }
     pub fn with_tools(mut self) -> Self {
@@ -773,6 +846,14 @@ impl ServerBuilder {
         self.enable_sampling = true;
         self
     }
+    pub fn with_resource_templates(mut self) -> Self {
+        self.enable_resource_templates = true;
+        self
+    }
+    pub fn with_resource_templates_dir<P: Into<std::path::PathBuf>>(mut self, path: P) -> Self {
+        self.resource_templates_dir = Some(path.into());
+        self
+    }
     pub fn with_prompts_dir<P: Into<std::path::PathBuf>>(mut self, path: P) -> Self {
         self.prompts_dir = Some(path.into());
         self
@@ -806,6 +887,12 @@ impl ServerBuilder {
         }
         if self.enable_sampling {
             server = server.enable_sampling();
+        }
+        if self.enable_resource_templates {
+            server = server.enable_resource_templates();
+        }
+        if let Some(ref path) = self.resource_templates_dir {
+            server = server.enable_resource_templates_dir(path.clone());
         }
         server
     }

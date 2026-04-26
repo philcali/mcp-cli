@@ -16,6 +16,7 @@ pub async fn route_request(
         "resources/unsubscribe" => {
             crate::handlers::handle_resources_unsubscribe(server, params).await
         }
+        "resources/templates/list" => crate::handlers::handle_resource_templates_list(server).await,
         // After initialize succeeds, server will be marked initialized
         // We only reject requests if explicitly not initialized (initialize not yet called)
         _ if !initialized && method != "ping" => Err(anyhow::anyhow!("Server not initialized")),
@@ -57,6 +58,10 @@ pub const KNOWN_METHODS: &[(&str, &str)] = &[
     ("resources/read", "Read resource contents"),
     ("resources/subscribe", "Subscribe to resource changes"),
     ("resources/unsubscribe", "Unsubscribe from resource changes"),
+    (
+        "resources/templates/list",
+        "List available resource templates",
+    ),
     ("prompts/list", "List available prompts"),
     ("prompts/get", "Get prompt with arguments"),
     ("telemetry/event", "Send telemetry event to server"),
