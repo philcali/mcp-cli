@@ -413,9 +413,22 @@ impl McpServer {
                 move |path: &std::path::Path| {
                     let resource_uri = format!("file://{}", path.display());
                     let subscriptions: Vec<String> = state.subscription_manager.get_subscriptions();
-                    if subscriptions.contains(&resource_uri)
-                        && let Some(ref tx) = tx
-                    {
+                    // Check direct match or template match
+                    let is_subscribed = subscriptions.contains(&resource_uri) || {
+                        // Check if any subscription is a template that matches this URI
+                        subscriptions.iter().any(|sub_uri| {
+                            if !sub_uri.contains("{path}") {
+                                return false;
+                            }
+                            // Simple template matching: split on {path} and check prefix/suffix
+                            let parts: Vec<&str> = sub_uri.split("{path}").collect();
+                            if parts.len() != 2 {
+                                return false;
+                            }
+                            resource_uri.starts_with(parts[0]) && resource_uri.ends_with(parts[1])
+                        })
+                    };
+                    if is_subscribed && let Some(ref tx) = tx {
                         let msg = json!({
                             "jsonrpc": "2.0",
                             "method": "notifications/resources/updated",

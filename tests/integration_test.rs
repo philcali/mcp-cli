@@ -1183,3 +1183,161 @@ fn test_resource_templates_in_capabilities() {
     );
     assert_eq!(caps["templateListChanged"], true);
 }
+
+/// Test subscribing to a resource via template pattern.
+#[test]
+fn test_resource_subscribe_via_template() {
+    let resources_dir = TempDir::new().unwrap();
+    let templates_dir = TempDir::new().unwrap();
+
+    // Create a resource file
+    let resource_file = resources_dir.path().join("test.txt");
+    fs::write(&resource_file, "content").unwrap();
+
+    // Create a template that matches this resource
+    let template_content = serde_json::json!({
+        "uriTemplate": "file://{path}",
+        "name": "any-file",
+        "description": "Matches any file"
+    });
+    std::fs::write(
+        templates_dir.path().join("any-file.template.json"),
+        serde_json::to_string_pretty(&template_content).unwrap(),
+    )
+    .unwrap();
+
+    let init_params = serde_json::json!({
+        "protocolVersion": "2024-11-05",
+        "capabilities": {},
+        "clientInfo": { "name": "test-client", "version": "1.0" }
+    });
+
+    let resource_uri = format!("file://{}", resource_file.display());
+    let subscribe_params = serde_json::json!({ "uri": resource_uri });
+
+    let output = common::run_request_sequence_all(
+        None,
+        Some(resources_dir.path().to_path_buf()),
+        None,
+        Some(templates_dir.path().to_path_buf()),
+        vec![],
+        vec![
+            ("initialize", Some(&init_params)),
+            ("resources/subscribe", Some(&subscribe_params)),
+        ],
+    );
+
+    assert_eq!(output.results.len(), 2);
+    assert!(
+        output.results[1].get("error").is_none(),
+        "Subscribe via template should succeed, got: {}\nstderr: {}",
+        serde_json::to_string_pretty(&output.results).unwrap(),
+        output.stderr
+    );
+}
+
+/// Test subscribing to a non-matching URI fails.
+#[test]
+fn test_resource_subscribe_non_matching_template() {
+    let templates_dir = TempDir::new().unwrap();
+
+    // Create a template that only matches file:// URIs
+    let template_content = serde_json::json!({
+        "uriTemplate": "file://{path}",
+        "name": "file-templates",
+        "description": "Only matches file:// URIs"
+    });
+    std::fs::write(
+        templates_dir.path().join("file-templates.template.json"),
+        serde_json::to_string_pretty(&template_content).unwrap(),
+    )
+    .unwrap();
+
+    let init_params = serde_json::json!({
+        "protocolVersion": "2024-11-05",
+        "capabilities": {},
+        "clientInfo": { "name": "test-client", "version": "1.0" }
+    });
+
+    let subscribe_params = serde_json::json!({ "uri": "https://example.com/doesnt-match" });
+
+    let output = common::run_request_sequence_all(
+        None,
+        None,
+        None,
+        Some(templates_dir.path().to_path_buf()),
+        vec![],
+        vec![
+            ("initialize", Some(&init_params)),
+            ("resources/subscribe", Some(&subscribe_params)),
+        ],
+    );
+
+    assert_eq!(output.results.len(), 2);
+    assert!(
+        output.results[1].get("error").is_some(),
+        "Subscribe should fail for non-matching URI"
+    );
+}
+
+/// Test unsubscribe works for template-matched resources.
+#[test]
+fn test_resource_unsubscribe_via_template() {
+    let resources_dir = TempDir::new().unwrap();
+    let templates_dir = TempDir::new().unwrap();
+
+    // Create a resource file
+    let resource_file = resources_dir.path().join("test.txt");
+    fs::write(&resource_file, "content").unwrap();
+
+    // Create a matching template
+    let template_content = serde_json::json!({
+        "uriTemplate": "file://{path}",
+        "name": "any-file",
+        "description": "Matches any file"
+    });
+    std::fs::write(
+        templates_dir.path().join("any-file.template.json"),
+        serde_json::to_string_pretty(&template_content).unwrap(),
+    )
+    .unwrap();
+
+    let init_params = serde_json::json!({
+        "protocolVersion": "2024-11-05",
+        "capabilities": {},
+        "clientInfo": { "name": "test-client", "version": "1.0" }
+    });
+
+    let resource_uri = format!("file://{}", resource_file.display());
+
+    let output = common::run_request_sequence_all(
+        None,
+        Some(resources_dir.path().to_path_buf()),
+        None,
+        Some(templates_dir.path().to_path_buf()),
+        vec![],
+        vec![
+            ("initialize", Some(&init_params)),
+            (
+                "resources/subscribe",
+                Some(&serde_json::json!({ "uri": resource_uri })),
+            ),
+            (
+                "resources/unsubscribe",
+                Some(&serde_json::json!({ "uri": resource_uri })),
+            ),
+        ],
+    );
+
+    assert_eq!(output.results.len(), 3);
+    // Subscribe should succeed
+    assert!(
+        output.results[1].get("error").is_none(),
+        "Subscribe should succeed for template-matched resource"
+    );
+    // Unsubscribe should succeed
+    assert!(
+        output.results[2].get("error").is_none(),
+        "Unsubscribe should succeed for template-matched resource"
+    );
+}
