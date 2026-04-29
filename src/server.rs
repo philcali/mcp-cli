@@ -576,9 +576,12 @@ impl McpServer {
 
         match self.handle_request(line, self.state.is_initialized()).await {
             Ok(response) => {
-                let mut out = stdout.lock().await;
-                let _ = out.write_all(format!("{}\n", response).as_bytes()).await;
-                let _ = out.flush().await;
+                // Empty response means notification — no reply needed
+                if !response.is_empty() {
+                    let mut out = stdout.lock().await;
+                    let _ = out.write_all(format!("{}\n", response).as_bytes()).await;
+                    let _ = out.flush().await;
+                }
             }
             Err(e) => {
                 error!("Error processing message: {}", e);
@@ -626,7 +629,19 @@ impl McpServer {
     }
 
     async fn handle_request(&mut self, line: &str, initialized: bool) -> Result<String> {
-        let request: JsonRpcRequest = serde_json::from_str(line)?;
+        let raw: serde_json::Value = serde_json::from_str(line)?;
+
+        // If there's no id, it's a notification — handle but don't send a response
+        if raw.get("id").is_none() {
+            let notification: JsonRpcNotification = serde_json::from_value(raw)?;
+            debug!("Processing notification: {}", notification.method);
+            let _ = self
+                .route_request(&notification.method, &notification.params, initialized)
+                .await;
+            return Ok(String::new());
+        }
+
+        let request: JsonRpcRequest = serde_json::from_value(raw)?;
         debug!(
             "Processing {} with id={}",
             request.method,
