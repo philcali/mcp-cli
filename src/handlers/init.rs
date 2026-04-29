@@ -18,10 +18,11 @@ pub async fn handle_initialize(
     );
 
     // Negotiate protocol version
-    match negotiate_protocol_version(&init_params.protocol_version) {
+    let negotiated_version = match negotiate_protocol_version(&init_params.protocol_version) {
         VersionNegotiationResult::Supported(version)
         | VersionNegotiationResult::Compatible(version) => {
             debug!("Negotiated protocol version: {}", version);
+            version
         }
         VersionNegotiationResult::Unsupported {
             received,
@@ -33,7 +34,7 @@ pub async fn handle_initialize(
             };
             return Err(anyhow::anyhow!("{}", error));
         }
-    }
+    };
 
     if let Some(roots_cap) = &init_params.capabilities.roots {
         debug!(
@@ -61,7 +62,7 @@ pub async fn handle_initialize(
         .store(true, std::sync::atomic::Ordering::SeqCst);
 
     let result = InitResult {
-        protocol_version: "2024-11-05".to_string(),
+        protocol_version: negotiated_version,
         capabilities: server.capabilities.clone(),
         server_info: Implementation {
             name: server.state.name.clone(),

@@ -104,6 +104,7 @@ pub struct InitParams {
 
 /// Initialize result sent to client.
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct InitResult {
     pub protocol_version: String,
     pub capabilities: ServerCapabilities,
@@ -123,6 +124,7 @@ pub struct ClientCapabilities {
 
 /// Roots capability from client.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RootsCapability {
     pub list_changed: Option<bool>,
 }
@@ -293,6 +295,7 @@ pub struct Implementation {
 
 /// Tool structure.
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Tool {
     pub name: String,
     pub description: Option<String>,
@@ -335,6 +338,7 @@ impl CallToolParams {
 
 /// Tool result structure.
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CallToolResult {
     pub content: Vec<Content>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -395,12 +399,14 @@ impl Content {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum StreamChunk {
     /// Initial metadata about the stream
+    #[serde(rename_all = "camelCase")]
     Meta {
         #[allow(dead_code)]
         chunk_count: i64,
         total_bytes: Option<usize>,
     },
     /// A chunk of content (text output)
+    #[serde(rename_all = "camelCase")]
     Content {
         data: String,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -412,6 +418,7 @@ pub enum StreamChunk {
 
 /// Tool call result with optional streaming ID.
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct StreamingCallResult {
     pub content: Vec<Content>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -438,6 +445,7 @@ impl ReadResourceParams {
 
 /// List tools request parameters.
 #[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct ListToolsParams {
     #[serde(default)]
     pub tool_names: Option<Vec<String>>,
@@ -475,6 +483,7 @@ impl ToolsListChangedNotification {
 
 /// Tool list item.
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ToolListItem {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -499,6 +508,7 @@ impl From<Tool> for ToolListItem {
 
 /// Resource structure.
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Resource {
     pub uri: String,
     #[serde(rename = "type")]
@@ -526,6 +536,7 @@ pub struct ResourceTemplate {
 
 /// Resource content.
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TextResourceContents {
     #[serde(rename = "uri")]
     pub uri_value: String,
@@ -647,6 +658,7 @@ pub struct StreamChunkNotification {
 
 /// Parameters for streaming chunk notifications.
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct StreamChunkParams {
     pub request_id: String,
     pub chunk: StreamChunk,
@@ -947,6 +959,7 @@ pub struct CompleteArgument {
 
 /// Completion result.
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CompleteResult {
     pub values: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1021,6 +1034,7 @@ pub struct SamplingMessage {
 
 /// Parameters for createMessage sampling request.
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateMessageParams {
     pub messages: Vec<SamplingMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1037,6 +1051,7 @@ pub struct CreateMessageParams {
 
 /// Result of createMessage sampling.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateMessageResult {
     pub model: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1101,6 +1116,34 @@ fn default_strategy() -> AuthStrategy {
 /// Supported MCP protocol versions (in order of preference).
 pub const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &["2024-11-05", "2024-10-07"];
 
+/// Check if a version is compatible by comparing year prefix against supported versions.
+/// Accepts any version whose year matches a supported year or is within one year ahead
+/// of the latest supported year (forward compatibility).
+fn is_compatible_version(version: &str) -> bool {
+    let client_year = match version
+        .split('-')
+        .next()
+        .and_then(|y| y.parse::<u16>().ok())
+    {
+        Some(y) => y,
+        None => return false,
+    };
+
+    let max_supported_year = SUPPORTED_PROTOCOL_VERSIONS
+        .iter()
+        .filter_map(|s| s.split('-').next())
+        .filter_map(|y| y.parse::<u16>().ok())
+        .max();
+
+    match max_supported_year {
+        Some(max_year) => {
+            // Match exact year or allow one year ahead for forward compat
+            client_year == max_year || client_year == max_year + 1
+        }
+        None => false,
+    }
+}
+
 /// Negotiate protocol version with client.
 /// Returns the version to use if negotiation succeeds.
 pub fn negotiate_protocol_version(client_version: &str) -> VersionNegotiationResult {
@@ -1113,9 +1156,8 @@ pub fn negotiate_protocol_version(client_version: &str) -> VersionNegotiationRes
         }
     }
 
-    // Allow any version starting with "2024-" as compatible
-    // This provides forward compatibility with future 2024 versions
-    if client_version.starts_with("2024-") {
+    // Allow any version whose year matches a supported version
+    if is_compatible_version(client_version) {
         return VersionNegotiationResult::Compatible(client_version.to_string());
     }
 
@@ -1134,9 +1176,9 @@ pub fn negotiate_protocol_version(client_version: &str) -> VersionNegotiationRes
 pub enum VersionNegotiationResult {
     /// Version is supported and will be used
     Supported(String),
-    /// Version starts with "2024-" but is not explicitly in our list
+    /// Version year matches a supported version but is not an exact match
     Compatible(String),
-    /// Version is not a valid 2024-x protocol version
+    /// Version year does not match any supported version
     Unsupported {
         received: String,
         supported: Vec<String>,

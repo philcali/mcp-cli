@@ -3,6 +3,9 @@ name = "mcp-cli"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+path = "src/lib.rs"
+
 [[bin]]
 name = "mcp-cli"
 path = "src/main.rs"

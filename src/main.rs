@@ -5,7 +5,10 @@
 use anyhow::Result;
 use clap::Parser;
 use mcp_cli::server::ServerBuilder;
-use tracing::{Level, info, warn};
+use std::fs::{self, OpenOptions};
+use std::path::PathBuf;
+use tracing::{info, warn};
+use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::format::FmtSpan;
 
 /// Model Context Protocol CLI server
@@ -35,20 +38,124 @@ struct Cli {
     /// Run as persistent stdio server (daemon mode)
     #[arg(long, short)]
     daemon: bool,
+
+    /// Log level (TRACE, DEBUG, INFO, WARN, ERROR)
+    #[arg(long, default_value = "info")]
+    log_level: String,
+
+    /// Log file path (default: ~/.cache/mcp-cli/mcp-cli.log). Set to "-" for stderr.
+    #[arg(long)]
+    log_file: Option<String>,
+}
+
+/// Resolve the default log file path: ~/.cache/mcp-cli/mcp-cli.log
+fn default_log_file() -> PathBuf {
+    let cache_dir = std::env::var("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            let home = std::env::var("HOME").unwrap_or_default();
+            PathBuf::from(format!("{}/.cache", home))
+        });
+    cache_dir.join("mcp-cli").join("mcp-cli.log")
+}
+
+/// Parse log level from string (case-insensitive)
+fn parse_log_level(level: &str) -> Option<tracing::Level> {
+    match level.to_lowercase().as_str() {
+        "trace" => Some(tracing::Level::TRACE),
+        "debug" => Some(tracing::Level::DEBUG),
+        "info" => Some(tracing::Level::INFO),
+        "warn" => Some(tracing::Level::WARN),
+        "error" => Some(tracing::Level::ERROR),
+        _ => None,
+    }
+}
+
+/// Initialize tracing with configurable output and level
+fn init_logging(log_file: &Option<String>, log_level: &str) -> Result<()> {
+    let level = parse_log_level(log_level).ok_or_else(|| {
+        anyhow::anyhow!(
+            "Invalid log level '{}'. Use: trace, debug, info, warn, error",
+            log_level
+        )
+    })?;
+
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        EnvFilter::default()
+            .add_directive(format!("mcp_cli={}", level).parse().unwrap())
+            .add_directive(format!("mcp-cli={}", level).parse().unwrap())
+    });
+
+    let log_target = match log_file {
+        Some(path) if path == "-" => "stderr",
+        Some(path) => path,
+        None => "default",
+    };
+
+    match log_target {
+        "stderr" => {
+            // Log to stderr (useful when stdout must remain clean for MCP stdio)
+            tracing_subscriber::fmt()
+                .with_env_filter(filter)
+                .with_span_events(FmtSpan::NONE)
+                .with_target(false)
+                .with_file(true)
+                .with_line_number(true)
+                .with_writer(std::io::stderr)
+                .init();
+        }
+        "default" => {
+            // Write to log file
+            let log_path = default_log_file();
+            fs::create_dir_all(log_path.parent().unwrap())?;
+
+            let file = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&log_path)?;
+
+            tracing_subscriber::fmt()
+                .with_env_filter(filter)
+                .with_span_events(FmtSpan::NONE)
+                .with_target(false)
+                .with_file(true)
+                .with_line_number(true)
+                .with_writer(file)
+                .init();
+
+            info!("Logging to {}", log_path.display());
+        }
+        custom_path => {
+            // Custom file path
+            let path = PathBuf::from(custom_path);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+
+            let file = OpenOptions::new().create(true).append(true).open(&path)?;
+
+            tracing_subscriber::fmt()
+                .with_env_filter(filter)
+                .with_span_events(FmtSpan::NONE)
+                .with_target(false)
+                .with_file(true)
+                .with_line_number(true)
+                .with_writer(file)
+                .init();
+
+            info!("Logging to {}", path.display());
+        }
+    }
+
+    Ok(())
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Initialize logging to stderr (never stdout - that's the protocol stream!)
-    tracing_subscriber::fmt()
-        .with_max_level(Level::INFO)
-        .with_span_events(FmtSpan::NONE)
-        .with_target(false)
-        .without_time()
-        .with_writer(std::io::stderr)
-        .init();
-
     let cli = Cli::parse();
+
+    init_logging(&cli.log_file, &cli.log_level)?;
+
     let mut builder = ServerBuilder::new("mcp-cli", "0.1.0")
         .with_tools()
         .with_resources(true);

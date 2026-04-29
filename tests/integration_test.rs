@@ -272,10 +272,10 @@ fn test_initialize() {
     );
 
     let result = response["result"].as_object().unwrap();
-    assert_eq!(result["protocol_version"], "2024-11-05");
+    assert_eq!(result["protocolVersion"], "2024-11-05");
     assert_eq!(result["capabilities"]["tools"]["listChanged"], true);
 
-    let server_info = &result["server_info"];
+    let server_info = &result["serverInfo"];
     assert_eq!(server_info["name"], "mcp-cli");
     assert_eq!(server_info["version"], "0.1.0");
 }
