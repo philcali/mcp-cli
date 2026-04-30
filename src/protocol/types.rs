@@ -299,7 +299,6 @@ pub struct Implementation {
 pub struct Tool {
     pub name: String,
     pub description: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub input_schema: Option<serde_json::Value>,
 }
 
@@ -308,7 +307,7 @@ impl Tool {
         Self {
             name: name.to_string(),
             description: Some(description.to_string()),
-            input_schema: None,
+            input_schema: Some(json!({ "type": "object" })),
         }
     }
 
@@ -488,7 +487,6 @@ pub struct ToolListItem {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub input_schema: Option<serde_json::Value>,
 }
 

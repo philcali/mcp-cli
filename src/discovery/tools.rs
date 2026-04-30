@@ -5,7 +5,13 @@ use anyhow::Result;
 use serde_json::json;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use tracing::{debug, info, warn};
+
+/// Default input schema used when a tool doesn't support --describe.
+fn default_input_schema() -> serde_json::Value {
+    json!({ "type": "object" })
+}
 
 #[derive(Debug, Clone)]
 pub struct ToolDefinition {
@@ -13,6 +19,74 @@ pub struct ToolDefinition {
     pub description: String,
     pub script_path: PathBuf,
     pub auth_config: Option<ToolAuthConfig>,
+    pub input_schema: serde_json::Value,
+}
+
+/// Probe a tool with --describe and parse the JSON response.
+/// Returns (name, description, input_schema) or falls back to defaults.
+fn describe_tool(path: &Path) -> (String, String, serde_json::Value) {
+    let output = match Command::new(path).arg("--describe").output() {
+        Ok(o) => o,
+        Err(e) => {
+            debug!("Failed to spawn {:?} --describe: {}", path, e);
+            return tool_defaults(path);
+        }
+    };
+
+    if !output.status.success() {
+        debug!(
+            "{:?} --describe exited with {}",
+            path,
+            output
+                .status
+                .code()
+                .map_or("unknown".to_string(), |c| c.to_string())
+        );
+        return tool_defaults(path);
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = match serde_json::from_str(&stdout) {
+        Ok(v) => v,
+        Err(e) => {
+            debug!("Failed to parse {:?} --describe output: {}", path, e);
+            return tool_defaults(path);
+        }
+    };
+
+    let name = parsed
+        .get("name")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            path.file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default()
+        });
+
+    let description = parsed
+        .get("description")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("Tool script: {}", path.display()));
+
+    let input_schema = parsed
+        .get("inputSchema")
+        .and_then(|v| if v.is_object() { Some(v.clone()) } else { None })
+        .unwrap_or(default_input_schema());
+
+    (name, description, input_schema)
+}
+
+/// Return fallback (name, description, input_schema) derived from the path.
+fn tool_defaults(path: &Path) -> (String, String, serde_json::Value) {
+    (
+        path.file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default(),
+        format!("Tool script: {}", path.display()),
+        default_input_schema(),
+    )
 }
 
 /// Discover tools from a directory.
@@ -59,13 +133,7 @@ pub fn discover_tools(tools_dir: &Path) -> Result<HashMap<String, ToolDefinition
             }
         }
 
-        let name = match path.file_stem() {
-            Some(stem) => stem.to_string_lossy().to_string(),
-            None => {
-                warn!("Failed to get file stem for {:?}", path);
-                continue;
-            }
-        };
+        let (name, description, input_schema) = describe_tool(&path);
 
         let auth_config = match load_tool_auth_config(&path.with_extension("")) {
             Ok(Some(cfg)) => Some(cfg),
@@ -80,9 +148,10 @@ pub fn discover_tools(tools_dir: &Path) -> Result<HashMap<String, ToolDefinition
             name.clone(),
             ToolDefinition {
                 name: name.clone(),
-                description: format!("Tool script: {}", path.display()),
+                description,
                 script_path: path.clone(),
                 auth_config,
+                input_schema,
             },
         );
 
@@ -101,6 +170,7 @@ pub fn list_tools(tools: &HashMap<String, ToolDefinition>) -> serde_json::Value 
             json!({
                 "name": t.name,
                 "description": t.description,
+                "inputSchema": t.input_schema,
             })
         })
         .collect();

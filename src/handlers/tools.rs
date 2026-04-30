@@ -20,6 +20,7 @@ pub async fn handle_tools_list(server: &crate::server::McpServer) -> Result<serd
             json!({
                 "name": t.name,
                 "description": t.description,
+                "inputSchema": t.input_schema,
             })
         })
         .collect();
