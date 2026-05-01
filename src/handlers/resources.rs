@@ -1,6 +1,6 @@
 //! Resource listing, reading, and subscription handlers.
 
-use crate::protocol::*;
+use crate::protocol::{ReadResourceParams, SubscribeResourceParams, UnsubscribeResourceParams};
 use anyhow::{Context, Result};
 use serde_json::json;
 use tokio::io::AsyncBufReadExt;
@@ -182,6 +182,21 @@ fn uri_matches_template(
     })
 }
 
+/// Check that a resource URI exists in regular resources or matches a template pattern.
+async fn validate_resource_exists(server: &crate::server::McpServer, uri: &str) -> Result<()> {
+    let resources = server.state.load_resources()?;
+    let resource_exists = resources.iter().any(|r| r.uri == uri);
+
+    if !resource_exists {
+        let templates = server.state.load_resource_templates()?;
+        if !uri_matches_template(uri, &templates) {
+            return Err(anyhow::anyhow!("Resource '{}' does not exist", uri));
+        }
+    }
+
+    Ok(())
+}
+
 /// Subscribe to resource change notifications.
 pub async fn handle_resources_subscribe(
     server: &crate::server::McpServer,
@@ -191,21 +206,7 @@ pub async fn handle_resources_subscribe(
         .context("Failed to parse resources/subscribe parameters")?;
 
     info!("Subscribing to resource: {}", subscribe_params.uri);
-
-    // Check if resource exists in regular resources
-    let resources = server.state.load_resources()?;
-    let resource_exists = resources.iter().any(|r| r.uri == subscribe_params.uri);
-
-    // If not found in regular resources, check against template patterns
-    if !resource_exists {
-        let templates = server.state.load_resource_templates()?;
-        if !uri_matches_template(&subscribe_params.uri, &templates) {
-            return Err(anyhow::anyhow!(
-                "Resource '{}' does not exist",
-                subscribe_params.uri
-            ));
-        }
-    }
+    validate_resource_exists(server, &subscribe_params.uri).await?;
 
     // Subscribe to the resource
     let was_new = server
@@ -231,21 +232,7 @@ pub async fn handle_resources_unsubscribe(
         .context("Failed to parse resources/unsubscribe parameters")?;
 
     info!("Unsubscribing from resource: {}", unsubscribe_params.uri);
-
-    // Check if resource exists in regular resources
-    let resources = server.state.load_resources()?;
-    let resource_exists = resources.iter().any(|r| r.uri == unsubscribe_params.uri);
-
-    // If not found in regular resources, check against template patterns
-    if !resource_exists {
-        let templates = server.state.load_resource_templates()?;
-        if !uri_matches_template(&unsubscribe_params.uri, &templates) {
-            return Err(anyhow::anyhow!(
-                "Resource '{}' does not exist",
-                unsubscribe_params.uri
-            ));
-        }
-    }
+    validate_resource_exists(server, &unsubscribe_params.uri).await?;
 
     // Unsubscribe from the resource
     let was_subscribed = server

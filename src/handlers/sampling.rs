@@ -1,6 +1,6 @@
 //! Sampling handler for LLM message creation.
 
-use crate::protocol::*;
+use crate::protocol::{CreateMessageParams, CreateMessageResult};
 use anyhow::{Context, Result};
 use serde_json::json;
 use tokio::io::AsyncWriteExt;
@@ -61,7 +61,11 @@ pub async fn handle_sampling_create_message(
     server.pending_sampling = Some((request_id.clone(), sender.clone()));
 
     // Write request to stdout
-    let stdout = server.stdout.as_ref().unwrap().clone();
+    let stdout = server
+        .stdout
+        .as_ref()
+        .expect("stdout should be set")
+        .clone();
     let mut out = stdout.lock().await;
     let _ = out
         .write_all(format!("{}\n", serde_json::to_string(&sampling_request)?).as_bytes())
@@ -72,7 +76,7 @@ pub async fn handle_sampling_create_message(
     // Wait for client response
     let response = {
         let mut guard = sender.lock().await;
-        let _tx = guard.take().unwrap();
+        let _tx = guard.take().expect("sender should be present");
         drop(guard);
         tokio::time::timeout(std::time::Duration::from_secs(60), rx)
             .await

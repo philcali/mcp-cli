@@ -1,6 +1,9 @@
 //! Initialization and connection management handlers.
 
-use crate::protocol::*;
+use crate::protocol::{
+    Implementation, InitError, InitParams, InitResult, VersionNegotiationResult,
+    negotiate_protocol_version,
+};
 use anyhow::{Context, Result};
 use tracing::{debug, info};
 

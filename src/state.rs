@@ -23,7 +23,7 @@ pub struct ServerState {
     pub cached_resources: Mutex<Vec<ResourceEntry>>,
     pub prompts_dir: Option<PathBuf>,
     pub cached_prompts: Arc<Mutex<HashMap<String, PromptEntry>>>,
-    pub roots: Mutex<Vec<crate::server::Root>>,
+    pub roots: Mutex<Vec<crate::protocol::Root>>,
     pub subscription_manager: Arc<dyn ResourceManager + Send + Sync>,
     /// Whether the server has been successfully initialized
     pub initialized: AtomicBool,
@@ -140,7 +140,7 @@ impl ServerState {
     pub fn add_root(&self, uri: String, name: Option<String>) {
         let mut roots = self.roots.lock().unwrap();
         if !roots.iter().any(|r| r.uri == uri) {
-            roots.push(crate::server::Root { uri, name });
+            roots.push(crate::protocol::Root { uri, name });
         }
     }
 

@@ -32,6 +32,58 @@ pub type ListChangedCallback = Box<dyn Fn() + Send + Sync>;
 /// The closure receives the file path that changed.
 pub type ResourceUpdatedCallback = Box<dyn Fn(&std::path::Path) + Send + Sync>;
 
+/// Run the common file-watching loop: set up notify watcher, watch directory,
+/// and dispatch change events to callbacks.
+///
+/// *`label`* is used in log messages (e.g. "prompts", "tools").
+/// *`on_event`* is called for every file change event. It receives the list of
+///  changed paths so the caller can decide what callbacks to fire.
+async fn run_watcher<F>(dir: PathBuf, config: WatchConfig, label: &str, on_event: F)
+where
+    F: Fn(&[PathBuf]),
+{
+    if !config.watch_for_changes {
+        warn!("{} file watching is disabled", label);
+        return;
+    }
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<notify::Result<Event>>(100);
+
+    let mut watcher_instance =
+        match notify::recommended_watcher(move |res: notify::Result<Event>| {
+            let _ = tx.blocking_send(res);
+        }) {
+            Ok(w) => w,
+            Err(e) => {
+                error!("Failed to create {} file watcher: {}", label, e);
+                return;
+            }
+        };
+
+    if let Err(e) = watcher_instance.watch(&dir, RecursiveMode::Recursive) {
+        error!("Failed to watch {} directory {:?}: {}", label, dir, e);
+        return;
+    }
+
+    info!("Started watching {} directory: {:?}", label, dir);
+
+    while let Some(res) = rx.recv().await {
+        match res {
+            Ok(event) => {
+                if event.kind.is_modify() || event.kind.is_create() || event.kind.is_remove() {
+                    for path in &event.paths {
+                        info!("{} file change detected: {:?}", label, path);
+                    }
+                    on_event(&event.paths);
+                }
+            }
+            Err(e) => {
+                error!("Watch error: {}", e);
+            }
+        }
+    }
+}
+
 /// Unified file system watcher trait.
 pub trait FileSystemWatcher: Send + Sync {
     /// Start watching a directory for changes.
@@ -118,47 +170,11 @@ impl FileSystemWatcher for PromptWatcher {
 
 impl PromptWatcher {
     async fn watch_directory(dir: PathBuf, watcher: &PromptWatcher, config: WatchConfig) {
-        if !config.watch_for_changes {
-            warn!("Prompt file watching is disabled");
-            return;
-        }
-
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<notify::Result<Event>>(100);
-
-        let mut watcher_instance =
-            match notify::recommended_watcher(move |res: notify::Result<Event>| {
-                let _ = tx.blocking_send(res);
-            }) {
-                Ok(w) => w,
-                Err(e) => {
-                    error!("Failed to create prompt file watcher: {}", e);
-                    return;
-                }
-            };
-
-        if let Err(e) = watcher_instance.watch(&dir, RecursiveMode::Recursive) {
-            error!("Failed to watch prompts directory {:?}: {}", dir, e);
-            return;
-        }
-
-        info!("Started watching prompts directory: {:?}", dir);
-
-        while let Some(res) = rx.recv().await {
-            match res {
-                Ok(event) => {
-                    if event.kind.is_modify() || event.kind.is_create() || event.kind.is_remove() {
-                        for path in &event.paths {
-                            info!("Prompt file change detected: {:?}", path);
-                        }
-                        watcher.on_change();
-                        watcher.on_list_changed();
-                    }
-                }
-                Err(e) => {
-                    error!("Watch error: {}", e);
-                }
-            }
-        }
+        run_watcher(dir, config, "prompts", |_| {
+            watcher.on_change();
+            watcher.on_list_changed();
+        })
+        .await;
     }
 }
 
@@ -210,46 +226,10 @@ impl FileSystemWatcher for ToolWatcher {
 
 impl ToolWatcher {
     async fn watch_directory(dir: PathBuf, watcher: &ToolWatcher, config: WatchConfig) {
-        if !config.watch_for_changes {
-            warn!("Tool file watching is disabled");
-            return;
-        }
-
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<notify::Result<Event>>(100);
-
-        let mut watcher_instance =
-            match notify::recommended_watcher(move |res: notify::Result<Event>| {
-                let _ = tx.blocking_send(res);
-            }) {
-                Ok(w) => w,
-                Err(e) => {
-                    error!("Failed to create tool file watcher: {}", e);
-                    return;
-                }
-            };
-
-        if let Err(e) = watcher_instance.watch(&dir, RecursiveMode::Recursive) {
-            error!("Failed to watch tools directory {:?}: {}", dir, e);
-            return;
-        }
-
-        info!("Started watching tools directory: {:?}", dir);
-
-        while let Some(res) = rx.recv().await {
-            match res {
-                Ok(event) => {
-                    if event.kind.is_modify() || event.kind.is_create() || event.kind.is_remove() {
-                        for path in &event.paths {
-                            info!("Tool file change detected: {:?}", path);
-                        }
-                        watcher.on_list_changed();
-                    }
-                }
-                Err(e) => {
-                    error!("Watch error: {}", e);
-                }
-            }
-        }
+        run_watcher(dir, config, "tools", |_| {
+            watcher.on_list_changed();
+        })
+        .await;
     }
 }
 
@@ -295,52 +275,16 @@ impl ResourceWatcher {
         on_updated: ResourceUpdatedCallback,
         config: WatchConfig,
     ) {
-        if !config.watch_for_changes {
-            warn!("Resource file watching is disabled");
-            return;
-        }
-
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<notify::Result<Event>>(100);
-
-        let mut watcher_instance =
-            match notify::recommended_watcher(move |res: notify::Result<Event>| {
-                let _ = tx.blocking_send(res);
-            }) {
-                Ok(w) => w,
-                Err(e) => {
-                    error!("Failed to create resource file watcher: {}", e);
-                    return;
-                }
-            };
-
-        if let Err(e) = watcher_instance.watch(&dir, RecursiveMode::Recursive) {
-            error!("Failed to watch resources directory {:?}: {}", dir, e);
-            return;
-        }
-
-        info!("Started watching resources directory: {:?}", dir);
-
-        while let Some(res) = rx.recv().await {
-            match res {
-                Ok(event) => {
-                    if event.kind.is_modify() || event.kind.is_create() || event.kind.is_remove() {
-                        for path in &event.paths {
-                            info!("Resource file change detected: {:?}", path);
-                        }
-                        (on_change)();
-                        (on_list_changed)();
-                        for path in &event.paths {
-                            if path.is_file() {
-                                (on_updated)(path);
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    error!("Watch error: {}", e);
+        run_watcher(dir, config, "resources", |paths: &[PathBuf]| {
+            (on_change)();
+            (on_list_changed)();
+            for path in paths {
+                if path.is_file() {
+                    (on_updated)(path);
                 }
             }
-        }
+        })
+        .await;
     }
 }
 
@@ -486,49 +430,10 @@ impl FileSystemWatcher for ResourceTemplateWatcher {
 
 impl ResourceTemplateWatcher {
     async fn watch_directory(dir: PathBuf, watcher: &ResourceTemplateWatcher, config: WatchConfig) {
-        if !config.watch_for_changes {
-            warn!("Resource template file watching is disabled in configuration");
-            return;
-        }
-
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<notify::Result<Event>>(100);
-
-        let mut watcher_instance =
-            match notify::recommended_watcher(move |res: notify::Result<Event>| {
-                let _ = tx.blocking_send(res);
-            }) {
-                Ok(w) => w,
-                Err(e) => {
-                    error!("Failed to create resource template file watcher: {}", e);
-                    return;
-                }
-            };
-
-        if let Err(e) = watcher_instance.watch(&dir, RecursiveMode::Recursive) {
-            error!(
-                "Failed to watch resource templates directory {:?}: {}",
-                dir, e
-            );
-            return;
-        }
-
-        info!("Started watching resource templates directory: {:?}", dir);
-
-        while let Some(res) = rx.recv().await {
-            match res {
-                Ok(event) => {
-                    if event.kind.is_modify() || event.kind.is_create() || event.kind.is_remove() {
-                        for path in &event.paths {
-                            info!("Resource template file change detected: {:?}", path);
-                        }
-                        watcher.on_change();
-                        watcher.on_list_changed();
-                    }
-                }
-                Err(e) => {
-                    error!("Watch error: {}", e);
-                }
-            }
-        }
+        run_watcher(dir, config, "resource templates", |_| {
+            watcher.on_change();
+            watcher.on_list_changed();
+        })
+        .await;
     }
 }

@@ -1,10 +1,30 @@
 //! Tool list and execution handlers.
 
-use crate::protocol::*;
+use crate::protocol::{CallToolParams, ToolAuthConfig};
 use anyhow::{Context, Result};
 use serde_json::json;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 use tracing::{debug, info};
+
+const TOOL_TIMEOUT_SECS: u64 = 30;
+
+/// Look up a tool by name, reloading the cache if needed.
+async fn find_tool(
+    server: &crate::server::McpServer,
+    name: &str,
+) -> Result<(std::path::PathBuf, Option<ToolAuthConfig>)> {
+    let cached = server.state.cached_tools.lock().unwrap();
+    if let Some(tool) = cached.get(name) {
+        return Ok((tool.script_path.clone(), tool.auth_config.clone()));
+    }
+    drop(cached);
+    let mut cached = server.state.cached_tools.lock().unwrap();
+    *cached = server.load_tools()?;
+    match cached.get(name) {
+        Some(tool) => Ok((tool.script_path.clone(), tool.auth_config.clone())),
+        None => Err(anyhow::anyhow!("Tool '{}' not found", name)),
+    }
+}
 
 /// List available tools.
 pub async fn handle_tools_list(server: &crate::server::McpServer) -> Result<serde_json::Value> {
@@ -41,20 +61,7 @@ pub async fn handle_tools_call(
         return handle_tools_call_streaming(server, &call_params).await;
     }
 
-    let (script_path, auth_config) = {
-        let cached = server.state.cached_tools.lock().unwrap();
-        if let Some(tool) = cached.get(&call_params.name) {
-            (tool.script_path.clone(), tool.auth_config.clone())
-        } else {
-            drop(cached);
-            let mut cached = server.state.cached_tools.lock().unwrap();
-            *cached = server.load_tools()?;
-            match cached.get(&call_params.name) {
-                Some(tool) => (tool.script_path.clone(), tool.auth_config.clone()),
-                None => return Err(anyhow::anyhow!("Tool '{}' not found", call_params.name)),
-            }
-        }
-    };
+    let (script_path, auth_config) = find_tool(server, &call_params.name).await?;
 
     let creds = if let Some(ref _config) = auth_config
         && let Some(ref tools_dir) = server.state.tools_dir
@@ -157,7 +164,6 @@ pub async fn handle_tools_call(
         (stdout_res?, stderr_res?)
     };
 
-    const TOOL_TIMEOUT_SECS: u64 = 30;
     match tokio::time::timeout(
         std::time::Duration::from_secs(TOOL_TIMEOUT_SECS),
         child.wait(),
@@ -224,24 +230,11 @@ pub async fn handle_tools_call(
 }
 
 /// Execute a tool with streaming output.
-pub async fn handle_tools_call_streaming(
+pub(crate) async fn handle_tools_call_streaming(
     server: &crate::server::McpServer,
     call_params: &CallToolParams,
 ) -> Result<serde_json::Value> {
-    let (script_path, auth_config) = {
-        let cached = server.state.cached_tools.lock().unwrap();
-        if let Some(tool) = cached.get(&call_params.name) {
-            (tool.script_path.clone(), tool.auth_config.clone())
-        } else {
-            drop(cached);
-            let mut cached = server.state.cached_tools.lock().unwrap();
-            *cached = server.load_tools()?;
-            match cached.get(&call_params.name) {
-                Some(tool) => (tool.script_path.clone(), tool.auth_config.clone()),
-                None => return Err(anyhow::anyhow!("Tool '{}' not found", call_params.name)),
-            }
-        }
-    };
+    let (script_path, auth_config) = find_tool(server, &call_params.name).await?;
 
     let creds = if let Some(ref _config) = auth_config
         && let Some(ref tools_dir) = server.state.tools_dir

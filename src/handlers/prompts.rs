@@ -1,6 +1,9 @@
 //! Prompt listing and retrieval handlers.
 
-use crate::protocol::*;
+use crate::protocol::{
+    GetPromptParams, GetPromptResult, PromptArgument, PromptFile, PromptMessage,
+    PromptMessageContentItem, PromptMessageContentValue, PromptTemplateEngine,
+};
 use anyhow::{Context, Result};
 use serde_json::json;
 
@@ -52,7 +55,7 @@ pub async fn handle_prompts_get(
     let content = std::fs::read_to_string(&entry.file_path)?;
     let prompt_file: PromptFile = serde_json::from_str(&content)?;
 
-    let engine = crate::protocol::PromptTemplateEngine::new();
+    let engine = PromptTemplateEngine::new();
     let base_dir = entry.file_path.parent();
 
     let messages: Vec<PromptMessage> = match prompt_file.messages {
@@ -111,7 +114,7 @@ pub fn validate_prompt_arguments(
 ) -> Result<()> {
     for arg in required {
         if arg.required.unwrap_or(false)
-            && !provided.as_ref().is_none_or(|p| p.contains_key(&arg.name))
+            && !provided.as_ref().is_some_and(|p| p.contains_key(&arg.name))
         {
             return Err(anyhow::anyhow!("Missing required argument: {}", arg.name));
         }
