@@ -23,10 +23,10 @@ pub async fn route_request(
         "initialized" => Ok(json!({})),
         "logging/messages" => crate::handlers::handle_logging_messages(server, params).await,
         "ping" => crate::handlers::handle_ping(server),
-        "roots/list" => server.handle_roots_list().await,
+        "roots/list" => crate::handlers::handle_roots_list(server).await,
         "tools/list" => crate::handlers::handle_tools_list(server).await,
         "tools/call" => crate::handlers::handle_tools_call(server, params).await,
-        "resources/read" => server.handle_resources_read(params).await,
+        "resources/read" => crate::handlers::handle_resources_read(server, params).await,
         "prompts/list" => crate::handlers::handle_prompts_list(server).await,
         "prompts/get" => crate::handlers::handle_prompts_get(server, params).await,
         "telemetry/event" => crate::handlers::handle_telemetry_event(server, params).await,
@@ -78,8 +78,3 @@ pub const KNOWN_METHODS: &[(&str, &str)] = &[
         "Ask client to call LLM on the server's behalf",
     ),
 ];
-
-/// Get list of all known methods (for introspection/debugging).
-pub fn list_known_methods() -> Vec<&'static str> {
-    KNOWN_METHODS.iter().map(|(m, _)| *m).collect()
-}
