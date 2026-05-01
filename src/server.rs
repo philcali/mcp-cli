@@ -1,12 +1,8 @@
 //! MCP server implementation with stdio transport.
 
-use crate::handlers::{
-    handle_initialize, handle_prompts_get, handle_prompts_list, handle_resources_list,
-    handle_tools_call, handle_tools_list,
-};
 use crate::protocol::*;
 use crate::watcher::{FileSystemWatcher, WatchConfig};
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde_json::json;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -128,11 +124,6 @@ impl McpServer {
 
     pub fn add_root(&self, uri: String, name: Option<String>) {
         self.state.add_root(uri, name);
-    }
-
-    #[allow(dead_code)]
-    async fn handle_initialize(&mut self, params: &serde_json::Value) -> Result<serde_json::Value> {
-        handle_initialize(self, params).await
     }
 
     pub fn enable_tools(mut self) -> Self {
@@ -665,7 +656,6 @@ impl McpServer {
         })
     }
 
-    #[allow(dead_code)]
     async fn route_request(
         &mut self,
         method: &str,
@@ -673,126 +663,6 @@ impl McpServer {
         initialized: bool,
     ) -> Result<serde_json::Value> {
         crate::routing::route_request(method, params, initialized, self).await
-    }
-
-    #[allow(dead_code)]
-    async fn handle_tools_list(&self) -> Result<serde_json::Value> {
-        handle_tools_list(self).await
-    }
-
-    #[allow(dead_code)]
-    async fn handle_resources_list(&self) -> Result<serde_json::Value> {
-        handle_resources_list(self).await
-    }
-
-    #[allow(dead_code)]
-    pub async fn handle_roots_list(&self) -> Result<serde_json::Value> {
-        info!("Handling roots list request");
-        let roots = self.state.roots.lock().unwrap();
-        let roots_list: Vec<_> = roots
-            .iter()
-            .map(|root| {
-                if let Some(ref name) = root.name {
-                    json!({ "uri": root.uri, "name": name })
-                } else {
-                    json!({ "uri": root.uri })
-                }
-            })
-            .collect();
-        Ok(json!({ "roots": roots_list }))
-    }
-
-    #[allow(dead_code)]
-    async fn handle_prompts_list(&self) -> Result<serde_json::Value> {
-        handle_prompts_list(self).await
-    }
-
-    #[allow(dead_code)]
-    async fn handle_prompts_get(&self, params: &serde_json::Value) -> Result<serde_json::Value> {
-        handle_prompts_get(self, params).await
-    }
-
-    #[allow(dead_code)]
-    async fn handle_tools_call(&self, params: &serde_json::Value) -> Result<serde_json::Value> {
-        handle_tools_call(self, params).await
-    }
-
-    #[allow(dead_code)]
-    pub async fn handle_resources_read(
-        &self,
-        params: &serde_json::Value,
-    ) -> Result<serde_json::Value> {
-        let uri_value = params
-            .get("uri")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("Missing 'uri' parameter"))?;
-        info!("Reading resource: {}", uri_value);
-        let resources = self.state.load_resources()?;
-        if let Some(entry) = resources.iter().find(|r| r.uri == uri_value).cloned() {
-            info!("Found resource: {:?}", entry.file_path);
-            let content = std::fs::read_to_string(&entry.file_path)?;
-            Ok(
-                json!({ "contents": [{ "uri": entry.uri, "text": content, "mimeType": entry.mime_type }] }),
-            )
-        } else {
-            Err(anyhow::anyhow!("Resource '{}' is not available", uri_value))
-        }
-    }
-
-    #[allow(dead_code)]
-    async fn handle_resources_subscribe(
-        &self,
-        params: &serde_json::Value,
-    ) -> Result<serde_json::Value> {
-        let subscribe_params: crate::protocol::SubscribeResourceParams =
-            serde_json::from_value(params.clone())
-                .context("Failed to parse resources/subscribe parameters")?;
-        info!("Subscribing to resource: {}", subscribe_params.uri);
-        let resources = self.state.load_resources()?;
-        if !resources.iter().any(|r| r.uri == subscribe_params.uri) {
-            return Err(anyhow::anyhow!(
-                "Resource '{}' does not exist",
-                subscribe_params.uri
-            ));
-        }
-        let was_new = self
-            .state
-            .subscription_manager
-            .subscribe(&subscribe_params.uri);
-        if was_new {
-            info!("Successfully subscribed to: {}", subscribe_params.uri);
-        } else {
-            debug!("Already subscribed to: {}", subscribe_params.uri);
-        }
-        Ok(json!({}))
-    }
-
-    #[allow(dead_code)]
-    async fn handle_resources_unsubscribe(
-        &self,
-        params: &serde_json::Value,
-    ) -> Result<serde_json::Value> {
-        let unsubscribe_params: crate::protocol::UnsubscribeResourceParams =
-            serde_json::from_value(params.clone())
-                .context("Failed to parse resources/unsubscribe parameters")?;
-        info!("Unsubscribing from resource: {}", unsubscribe_params.uri);
-        let resources = self.state.load_resources()?;
-        if !resources.iter().any(|r| r.uri == unsubscribe_params.uri) {
-            return Err(anyhow::anyhow!(
-                "Resource '{}' does not exist",
-                unsubscribe_params.uri
-            ));
-        }
-        let was_subscribed = self
-            .state
-            .subscription_manager
-            .unsubscribe(&unsubscribe_params.uri);
-        if !was_subscribed {
-            debug!("Not subscribed to: {}", unsubscribe_params.uri);
-        } else {
-            info!("Successfully unsubscribed from: {}", unsubscribe_params.uri);
-        }
-        Ok(json!({}))
     }
 }
 
@@ -979,7 +849,8 @@ mod tests {
         .unwrap();
         let server = McpServer::new("test-server", "1.0.0")
             .enable_prompts_dir(temp_dir.path().to_path_buf());
-        let _result: serde_json::Value = server.handle_prompts_list().await.unwrap();
+        let _result: serde_json::Value =
+            crate::handlers::handle_prompts_list(&server).await.unwrap();
         assert!(
             server
                 .state
