@@ -1,6 +1,9 @@
 //! MCP server implementation with stdio transport.
 
-use crate::protocol::*;
+use crate::protocol::{
+    JsonRpcError, JsonRpcNotification, JsonRpcRequest, PromptsCapability, ResourcesCapability,
+    SamplingCapability, ServerCapabilities, ToolsCapability,
+};
 use crate::watcher::{FileSystemWatcher, WatchConfig};
 use anyhow::Result;
 use serde_json::json;
@@ -15,14 +18,6 @@ pub use crate::state::ServerState;
 // Re-export discovery types for convenience
 pub use crate::discovery::tools::ToolDefinition;
 pub type PromptEntry = crate::discovery::prompts::PromptEntry;
-
-/// Client-provided root directory.
-#[derive(Debug, Clone)]
-pub struct Root {
-    pub uri: String,
-    #[allow(dead_code)]
-    pub name: Option<String>,
-}
 
 /// Configuration for prompt caching.
 #[derive(Debug, Clone)]
@@ -47,7 +42,6 @@ type PendingSampling = (
     String,
     std::sync::Arc<tokio::sync::Mutex<Option<oneshot::Sender<serde_json::Value>>>>,
 );
-// use std::collections::HashMap;
 
 /// Server state and configuration.
 pub struct McpServer {
@@ -464,7 +458,7 @@ impl McpServer {
         let mut reader = BufReader::new(stdin).lines();
         info!("MCP server starting, waiting for messages...");
 
-        let stdout = self.stdout.as_ref().unwrap().clone();
+        let stdout = self.stdout.as_ref().expect("stdout should be set").clone();
 
         loop {
             match reader.next_line().await {
@@ -515,7 +509,7 @@ impl McpServer {
             let mut term_signal = signal(SignalKind::terminate())?;
             let mut int_signal = signal(SignalKind::interrupt())?;
 
-            let stdout = self.stdout.as_ref().unwrap().clone();
+            let stdout = self.stdout.as_ref().expect("stdout should be set").clone();
 
             info!("Daemon mode: waiting for SIGINT or SIGTERM...");
 
@@ -580,7 +574,12 @@ impl McpServer {
                 let mut out = stdout.lock().await;
                 let _ = out
                     .write_all(
-                        format!("{}\n", serde_json::to_string(&err_resp).unwrap()).as_bytes(),
+                        format!(
+                            "{}\n",
+                            serde_json::to_string(&err_resp)
+                                .expect("error response should serialize")
+                        )
+                        .as_bytes(),
                     )
                     .await;
             }

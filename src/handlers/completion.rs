@@ -1,6 +1,6 @@
 //! Completion handler for argument autocompletion.
 
-use crate::protocol::*;
+use crate::protocol::CompleteParams;
 use anyhow::{Context, Result};
 use serde_json::json;
 use tracing::debug;
