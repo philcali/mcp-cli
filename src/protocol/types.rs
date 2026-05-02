@@ -177,6 +177,8 @@ pub struct ServerCapabilities {
     pub tools: Option<ToolsCapability>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sampling: Option<SamplingCapability>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tasks: Option<TasksCapability>,
 }
 
 impl ServerCapabilities {
@@ -239,6 +241,18 @@ impl ServerCapabilities {
     /// Enable sampling capability (server can ask client to call LLM).
     pub fn with_sampling(mut self) -> Self {
         self.sampling = Some(SamplingCapability { list_changed: None });
+        self
+    }
+
+    /// Enable tasks capability (server supports task-augmented requests).
+    pub fn with_tasks(mut self) -> Self {
+        self.tasks = Some(TasksCapability {
+            list: Some(true),
+            cancel: Some(true),
+            requests: Some(TasksRequestsCapability {
+                tools: Some(TasksToolsRequestsCapability { call: Some(true) }),
+            }),
+        });
         self
     }
 }
@@ -326,6 +340,9 @@ pub struct CallToolParams {
     /// Opt-in flag for streaming results
     #[serde(default, rename = "stream")]
     pub stream: bool,
+    /// When present, this call should be executed as a task
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<TaskAugmentation>,
 }
 
 impl CallToolParams {
@@ -1215,6 +1232,159 @@ impl std::fmt::Display for InitError {
             InitError::Configuration(msg) => write!(f, "Server configuration error: {}", msg),
         }
     }
+}
+
+// ===========================================================================
+// TASKS SUPPORT
+// ===========================================================================
+
+/// Task execution state.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskState {
+    Working,
+    InputRequired,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+impl TaskState {
+    pub fn is_terminal(&self) -> bool {
+        matches!(
+            self,
+            TaskState::Completed | TaskState::Failed | TaskState::Cancelled
+        )
+    }
+}
+
+/// Tool-level task support level.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub enum TaskSupportLevel {
+    Forbidden,
+    Optional,
+    Required,
+}
+
+/// Task augmentation for request parameters.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskAugmentation {
+    /// TTL in milliseconds since creation after which task may be deleted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttl: Option<u64>,
+}
+
+/// Tasks capability for server declaration.
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TasksCapability {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub list: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cancel: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "requests")]
+    pub requests: Option<TasksRequestsCapability>,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct TasksRequestsCapability {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools: Option<TasksToolsRequestsCapability>,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct TasksToolsRequestsCapability {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub call: Option<bool>,
+}
+
+/// A task representing the execution state of a request.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Task {
+    #[serde(rename = "taskId")]
+    pub task_id: String,
+    pub state: TaskState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status_message: Option<String>,
+    #[serde(rename = "createdAt")]
+    pub created_at: String,
+    #[serde(rename = "lastUpdatedAt")]
+    pub last_updated_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ttl: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "pollInterval")]
+    pub poll_interval: Option<u64>,
+}
+
+/// Result when a task is created (returned immediately by augmented request).
+#[derive(Debug, Serialize)]
+pub struct CreateTaskResult {
+    pub task: Task,
+}
+
+/// Parameters for tasks/get.
+#[derive(Debug, Deserialize)]
+pub struct GetTaskParams {
+    #[serde(rename = "taskId")]
+    pub task_id: String,
+}
+
+/// Result of tasks/get.
+#[derive(Debug, Serialize)]
+pub struct GetTaskResult {
+    pub task: Task,
+}
+
+/// Parameters for tasks/list.
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ListTasksParams {
+    #[serde(default)]
+    pub cursor: Option<String>,
+    #[serde(default)]
+    pub states: Option<Vec<TaskState>>,
+}
+
+/// Result of tasks/list.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListTasksResult {
+    pub tasks: Vec<Task>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+}
+
+/// Parameters for tasks/result.
+#[derive(Debug, Deserialize)]
+pub struct TaskResultParams {
+    #[serde(rename = "taskId")]
+    pub task_id: String,
+    /// Timeout in seconds for blocking on terminal state.
+    #[serde(default = "default_task_result_timeout")]
+    pub timeout: u64,
+}
+
+fn default_task_result_timeout() -> u64 {
+    300
+}
+
+/// Parameters for tasks/cancel.
+#[derive(Debug, Deserialize)]
+pub struct CancelTaskParams {
+    #[serde(rename = "taskId")]
+    pub task_id: String,
+}
+
+/// Stored result when a task reaches terminal state.
+#[derive(Debug, Clone, Serialize)]
+pub struct TaskResult {
+    pub result: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<serde_json::Value>,
 }
 
 impl std::error::Error for InitError {}

@@ -8,6 +8,7 @@ pub mod prompts;
 pub mod resources;
 pub mod roots;
 pub mod sampling;
+pub mod tasks;
 pub mod telemetry;
 pub mod tools;
 
@@ -23,5 +24,6 @@ pub use resources::{
 };
 pub use roots::handle_roots_list;
 pub use sampling::handle_sampling_create_message;
+pub use tasks::{handle_tasks_cancel, handle_tasks_get, handle_tasks_list, handle_tasks_result};
 pub use telemetry::handle_telemetry_event;
 pub use tools::{handle_tools_call, handle_tools_list};

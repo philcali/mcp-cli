@@ -21,6 +21,7 @@ pub mod protocol;
 pub mod routing;
 pub mod server;
 pub mod state;
+pub mod task_manager;
 pub mod watcher;
 
 // Note: tools module uses serde_json but is not exposed here

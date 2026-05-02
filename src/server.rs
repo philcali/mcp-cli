@@ -234,6 +234,17 @@ impl McpServer {
         self
     }
 
+    pub fn enable_tasks(mut self) -> Self {
+        self.capabilities.tasks = Some(crate::protocol::TasksCapability {
+            list: Some(true),
+            cancel: Some(true),
+            requests: Some(crate::protocol::TasksRequestsCapability {
+                tools: Some(crate::protocol::TasksToolsRequestsCapability { call: Some(true) }),
+            }),
+        });
+        self
+    }
+
     pub fn enable_resource_templates_dir(mut self, path: PathBuf) -> Self {
         let mut new_state = (*self.state).clone();
         new_state.resource_templates_dir = Some(path);
@@ -689,6 +700,7 @@ pub struct ServerBuilder {
     enable_sampling: bool,
     enable_resource_templates: bool,
     resource_templates_dir: Option<std::path::PathBuf>,
+    enable_tasks: bool,
 }
 
 impl ServerBuilder {
@@ -708,6 +720,7 @@ impl ServerBuilder {
             enable_sampling: false,
             enable_resource_templates: false,
             resource_templates_dir: None,
+            enable_tasks: false,
         }
     }
     pub fn with_tools(mut self) -> Self {
@@ -751,6 +764,10 @@ impl ServerBuilder {
         self.resource_templates_dir = Some(path.into());
         self
     }
+    pub fn with_tasks(mut self) -> Self {
+        self.enable_tasks = true;
+        self
+    }
     pub fn with_prompts_dir<P: Into<std::path::PathBuf>>(mut self, path: P) -> Self {
         self.prompts_dir = Some(path.into());
         self
@@ -790,6 +807,9 @@ impl ServerBuilder {
         }
         if let Some(ref path) = self.resource_templates_dir {
             server = server.enable_resource_templates_dir(path.clone());
+        }
+        if self.enable_tasks {
+            server = server.enable_tasks();
         }
         server
     }

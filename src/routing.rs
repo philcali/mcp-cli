@@ -35,6 +35,10 @@ pub async fn route_request(
         "sampling/createMessage" => {
             crate::handlers::handle_sampling_create_message(server, params).await
         }
+        "tasks/get" => crate::handlers::handle_tasks_get(server, params).await,
+        "tasks/list" => crate::handlers::handle_tasks_list(server, params).await,
+        "tasks/result" => crate::handlers::handle_tasks_result(server, params).await,
+        "tasks/cancel" => crate::handlers::handle_tasks_cancel(server, params).await,
         _ => Err(anyhow::anyhow!("Unknown method: {}", method)),
     }
 }
@@ -77,4 +81,8 @@ pub const KNOWN_METHODS: &[(&str, &str)] = &[
         "sampling/createMessage",
         "Ask client to call LLM on the server's behalf",
     ),
+    ("tasks/get", "Get task status"),
+    ("tasks/list", "List tasks"),
+    ("tasks/result", "Get task result (blocking)"),
+    ("tasks/cancel", "Cancel a running task"),
 ];

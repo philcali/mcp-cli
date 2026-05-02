@@ -35,6 +35,8 @@ pub struct ServerState {
     pub resource_templates_dir: Option<PathBuf>,
     /// Cached resource templates
     pub cached_resource_templates: Mutex<Vec<crate::discovery::resources::ResourceTemplateEntry>>,
+    /// Task manager for task-augmented requests
+    pub task_manager: std::sync::Arc<crate::task_manager::TaskManager>,
 }
 
 impl Clone for ServerState {
@@ -57,6 +59,7 @@ impl Clone for ServerState {
             cached_resource_templates: Mutex::new(
                 self.cached_resource_templates.lock().unwrap().clone(),
             ),
+            task_manager: Arc::clone(&self.task_manager),
         }
     }
 }
@@ -82,6 +85,7 @@ impl ServerState {
             client_capabilities: None,
             resource_templates_dir: None,
             cached_resource_templates: Mutex::new(Vec::new()),
+            task_manager: Arc::new(crate::task_manager::TaskManager::new()),
         }
     }
 

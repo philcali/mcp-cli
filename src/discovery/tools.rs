@@ -1,6 +1,6 @@
 //! Tool discovery logic.
 
-use crate::protocol::{ToolAuthConfig, load_tool_auth_config};
+use crate::protocol::{TaskSupportLevel, ToolAuthConfig, load_tool_auth_config};
 use anyhow::Result;
 use serde_json::json;
 use std::collections::HashMap;
@@ -20,11 +20,12 @@ pub struct ToolDefinition {
     pub script_path: PathBuf,
     pub auth_config: Option<ToolAuthConfig>,
     pub input_schema: serde_json::Value,
+    pub task_support: Option<TaskSupportLevel>,
 }
 
 /// Probe a tool with --describe and parse the JSON response.
-/// Returns (name, description, input_schema) or falls back to defaults.
-fn describe_tool(path: &Path) -> (String, String, serde_json::Value) {
+/// Returns (name, description, input_schema, task_support) or falls back to defaults.
+fn describe_tool(path: &Path) -> (String, String, serde_json::Value, Option<TaskSupportLevel>) {
     let output = match Command::new(path).arg("--describe").output() {
         Ok(o) => o,
         Err(e) => {
@@ -75,17 +76,29 @@ fn describe_tool(path: &Path) -> (String, String, serde_json::Value) {
         .and_then(|v| if v.is_object() { Some(v.clone()) } else { None })
         .unwrap_or(default_input_schema());
 
-    (name, description, input_schema)
+    let task_support = parsed
+        .get("execution")
+        .and_then(|e| e.get("taskSupport"))
+        .and_then(|v| v.as_str())
+        .and_then(|s| match s {
+            "forbidden" => Some(TaskSupportLevel::Forbidden),
+            "optional" => Some(TaskSupportLevel::Optional),
+            "required" => Some(TaskSupportLevel::Required),
+            _ => None,
+        });
+
+    (name, description, input_schema, task_support)
 }
 
-/// Return fallback (name, description, input_schema) derived from the path.
-fn tool_defaults(path: &Path) -> (String, String, serde_json::Value) {
+/// Return fallback (name, description, input_schema, task_support) derived from the path.
+fn tool_defaults(path: &Path) -> (String, String, serde_json::Value, Option<TaskSupportLevel>) {
     (
         path.file_stem()
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_default(),
         format!("Tool script: {}", path.display()),
         default_input_schema(),
+        None,
     )
 }
 
@@ -133,7 +146,7 @@ pub fn discover_tools(tools_dir: &Path) -> Result<HashMap<String, ToolDefinition
             }
         }
 
-        let (name, description, input_schema) = describe_tool(&path);
+        let (name, description, input_schema, task_support) = describe_tool(&path);
 
         let auth_config = match load_tool_auth_config(&path.with_extension("")) {
             Ok(Some(cfg)) => Some(cfg),
@@ -152,6 +165,7 @@ pub fn discover_tools(tools_dir: &Path) -> Result<HashMap<String, ToolDefinition
                 script_path: path.clone(),
                 auth_config,
                 input_schema,
+                task_support,
             },
         );
 

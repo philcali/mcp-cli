@@ -1,6 +1,6 @@
 //! Tool list and execution handlers.
 
-use crate::protocol::{CallToolParams, ToolAuthConfig};
+use crate::protocol::{CallToolParams, TaskSupportLevel, ToolAuthConfig};
 use anyhow::{Context, Result};
 use serde_json::json;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
@@ -37,11 +37,22 @@ pub async fn handle_tools_list(server: &crate::server::McpServer) -> Result<serd
     let tool_list: Vec<_> = cached
         .values()
         .map(|t| {
-            json!({
+            let mut tool_obj = json!({
                 "name": t.name,
                 "description": t.description,
                 "inputSchema": t.input_schema,
-            })
+            });
+            if let Some(ref ts) = t.task_support {
+                let exec = json!({
+                    "taskSupport": match ts {
+                        crate::protocol::TaskSupportLevel::Forbidden => "forbidden",
+                        crate::protocol::TaskSupportLevel::Optional => "optional",
+                        crate::protocol::TaskSupportLevel::Required => "required",
+                    }
+                });
+                tool_obj["execution"] = exec;
+            }
+            tool_obj
         })
         .collect();
 
@@ -55,6 +66,11 @@ pub async fn handle_tools_call(
 ) -> Result<serde_json::Value> {
     let call_params: CallToolParams =
         serde_json::from_value(params.clone()).context("Failed to parse tool call parameters")?;
+
+    // Check if task augmentation was requested
+    if call_params.task.is_some() {
+        return handle_tools_call_as_task(server, &call_params, params).await;
+    }
 
     // Check if streaming was requested
     if call_params.is_streaming() {
@@ -452,4 +468,194 @@ pub(crate) async fn handle_tools_call_streaming(
             ))
         }
     }
+}
+
+/// Execute a tool as a task — spawns async, returns immediately with task ID.
+async fn handle_tools_call_as_task(
+    server: &crate::server::McpServer,
+    call_params: &CallToolParams,
+    _raw_params: &serde_json::Value,
+) -> Result<serde_json::Value> {
+    // Check if the tool supports tasks
+    {
+        let cached = server.state.cached_tools.lock().unwrap();
+        if let Some(tool) = cached.get(&call_params.name)
+            && tool.task_support == Some(TaskSupportLevel::Forbidden)
+        {
+            return Err(anyhow::anyhow!(
+                "Tool '{}' does not support task execution",
+                call_params.name
+            ));
+        }
+    }
+
+    let (script_path, auth_config) = find_tool(server, &call_params.name).await?;
+
+    let creds = if let Some(ref _config) = auth_config
+        && let Some(ref tools_dir) = server.state.tools_dir
+    {
+        match crate::auth::resolve_credentials(
+            &server.state.oauth_cache,
+            tools_dir,
+            &call_params.name,
+        )
+        .await
+        {
+            Ok(c) => c,
+            Err(e) => {
+                return Err(anyhow::anyhow!(
+                    "Credential resolution failed for tool '{}': {}",
+                    call_params.name,
+                    e
+                ));
+            }
+        }
+    } else {
+        std::collections::HashMap::new()
+    };
+
+    let ttl = call_params
+        .task
+        .as_ref()
+        .and_then(|t| t.ttl)
+        .or(Some(3600000)); // default 1 hour
+
+    let task_id = server.state.task_manager.create_task("tools/call", ttl);
+
+    let task_manager = server.state.task_manager.clone();
+
+    let input = json!({
+        "name": call_params.name,
+        "arguments": call_params.arguments,
+    });
+
+    // Clone task_id for the spawned task
+    let task_id_spawn = task_id.clone();
+
+    // Spawn the tool process asynchronously
+    tokio::spawn(async move {
+        let mut cmd = tokio::process::Command::new(&script_path);
+        for (k, v) in &creds {
+            cmd.env(k, v);
+        }
+
+        let mut child = match cmd
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(e) => {
+                task_manager.fail_task(
+                    &task_id_spawn,
+                    json!({
+                        "error": format!("Failed to spawn tool: {}", e)
+                    }),
+                );
+                return;
+            }
+        };
+
+        // Write input
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = stdin.write_all(input.to_string().as_bytes()).await;
+        }
+
+        // Read stdout/stderr concurrently
+        let (stdout_result, stderr_output) = {
+            let mut stdout = child.stdout.take().expect("stdout should be available");
+            let mut stderr = child.stderr.take().expect("stderr should be available");
+
+            let (stdout_res, stderr_res) = tokio::join!(
+                async {
+                    use tokio::io::AsyncReadExt;
+                    let mut output = String::new();
+                    match stdout.read_to_string(&mut output).await {
+                        Ok(_) => anyhow::Result::<String>::Ok(output),
+                        Err(e) => anyhow::Result::<String>::Err(anyhow::anyhow!(e)),
+                    }
+                },
+                async {
+                    use tokio::io::AsyncReadExt;
+                    let mut error_output = String::new();
+                    match stderr.read_to_string(&mut error_output).await {
+                        Ok(_) => anyhow::Result::<String>::Ok(error_output),
+                        Err(e) => anyhow::Result::<String>::Err(anyhow::anyhow!(e)),
+                    }
+                }
+            );
+
+            match (stdout_res, stderr_res) {
+                (Ok(so), Ok(se)) => (so, se),
+                (Err(e), _) => {
+                    task_manager.fail_task(
+                        &task_id_spawn,
+                        json!({
+                            "error": format!("Tool I/O error: {}", e)
+                        }),
+                    );
+                    let _ = child.kill().await;
+                    return;
+                }
+                (_, Err(e)) => {
+                    task_manager.fail_task(
+                        &task_id_spawn,
+                        json!({
+                            "error": format!("Tool I/O error: {}", e)
+                        }),
+                    );
+                    let _ = child.kill().await;
+                    return;
+                }
+            }
+        };
+
+        // Wait for tool with longer timeout (1 hour default for tasks)
+        const TASK_TOOL_TIMEOUT_SECS: u64 = 3600;
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(TASK_TOOL_TIMEOUT_SECS),
+            child.wait(),
+        )
+        .await
+        {
+            Ok(Ok(status)) => {
+                if status.success() {
+                    task_manager.complete_task(
+                        &task_id_spawn,
+                        json!({
+                            "content": [{ "type": "text", "text": stdout_result.trim() }],
+                            "isError": false,
+                        }),
+                    );
+                } else {
+                    task_manager.fail_task(
+                        &task_id_spawn,
+                        json!({
+                            "error": format!("Tool failed with exit code {:?}", status.code()),
+                            "stderr": stderr_output.trim(),
+                        }),
+                    );
+                }
+            }
+            _ => {
+                let _ = child.kill().await;
+                task_manager.fail_task(
+                    &task_id_spawn,
+                    json!({
+                        "error": "Tool execution timed out after 3600 seconds"
+                    }),
+                );
+            }
+        }
+    });
+
+    // Return immediately with the task
+    let task = server
+        .state
+        .task_manager
+        .get_task(&task_id)
+        .ok_or_else(|| anyhow::anyhow!("Task creation failed"))?;
+
+    Ok(json!({ "task": task }))
 }
