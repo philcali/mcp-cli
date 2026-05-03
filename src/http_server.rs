@@ -91,15 +91,15 @@ async fn json_rpc_handler(
 
 /// Extract the JSON-RPC id from a message as a string.
 fn extract_id(raw: &serde_json::Value) -> Option<String> {
-    raw.get("id").and_then(|v| {
+    raw.get("id").map(|v| {
         if let Some(s) = v.as_str() {
-            Some(s.to_string())
+            s.to_string()
         } else if let Some(n) = v.as_i64() {
-            Some(n.to_string())
+            n.to_string()
         } else if let Some(u) = v.as_u64() {
-            Some(u.to_string())
+            u.to_string()
         } else {
-            Some(serde_json::to_string(v).unwrap_or_default())
+            serde_json::to_string(v).unwrap_or_default()
         }
     })
 }
@@ -118,18 +118,18 @@ async fn route_single_message(
     initialized: bool,
 ) -> Option<serde_json::Value> {
     // Notification (no id) — handle but return None (no response)
-    if raw.get("id").is_none() {
-        if let Ok(notification) = serde_json::from_value::<JsonRpcNotification>(raw.clone()) {
-            debug!("Processing notification: {}", notification.method);
-            let _ = crate::routing::route_request(
-                &notification.method,
-                &notification.params,
-                initialized,
-                server,
-            )
-            .await;
-            return None;
-        }
+    if raw.get("id").is_none()
+        && let Ok(notification) = serde_json::from_value::<JsonRpcNotification>(raw.clone())
+    {
+        debug!("Processing notification: {}", notification.method);
+        let _ = crate::routing::route_request(
+            &notification.method,
+            &notification.params,
+            initialized,
+            server,
+        )
+        .await;
+        return None;
     }
 
     // Request with id
@@ -169,12 +169,11 @@ async fn route_single_message(
 /// Handle a single JSON-RPC message.
 async fn handle_single(server: &McpServer, raw: &serde_json::Value) -> axum::response::Response {
     // First check if this is a response to a pending request (e.g., sampling)
-    if let Some(id) = extract_id(raw) {
-        if let Some(response) = extract_result_or_error(raw) {
-            if server.resolve_pending_request(&id, response).await {
-                return (StatusCode::OK, Json(json!({"status": "ok"}))).into_response();
-            }
-        }
+    if let Some(id) = extract_id(raw)
+        && let Some(response) = extract_result_or_error(raw)
+        && server.resolve_pending_request(&id, response).await
+    {
+        return (StatusCode::OK, Json(json!({"status": "ok"}))).into_response();
     }
 
     let initialized = server.state.is_initialized();
@@ -207,17 +206,16 @@ async fn handle_batch(server: &McpServer, raw: &serde_json::Value) -> axum::resp
 
     for msg in messages {
         // Check if this is a pending response
-        if let Some(id) = extract_id(msg) {
-            if let Some(resp) = extract_result_or_error(msg) {
-                if server.resolve_pending_request(&id, resp).await {
-                    responses.push(json!({
-                        "jsonrpc": "2.0",
-                        "result": {"status": "ok"},
-                        "id": id
-                    }));
-                    continue;
-                }
-            }
+        if let Some(id) = extract_id(msg)
+            && let Some(resp) = extract_result_or_error(msg)
+            && server.resolve_pending_request(&id, resp).await
+        {
+            responses.push(json!({
+                "jsonrpc": "2.0",
+                "result": {"status": "ok"},
+                "id": id
+            }));
+            continue;
         }
 
         if let Some(response) = route_single_message(server, msg, initialized).await {
