@@ -29,8 +29,8 @@ pub struct ServerState {
     pub initialized: AtomicBool,
     /// OAuth2 token cache shared across all requests
     pub oauth_cache: TokenCache,
-    /// Client's capabilities from the initialize request
-    pub client_capabilities: Option<ClientCapabilities>,
+    /// Client's capabilities from the initialize request (interior-mutable for HTTP transport)
+    pub client_capabilities: Mutex<Option<ClientCapabilities>>,
     /// Resource templates directory
     pub resource_templates_dir: Option<PathBuf>,
     /// Cached resource templates
@@ -54,7 +54,7 @@ impl Clone for ServerState {
             subscription_manager: Arc::clone(&self.subscription_manager),
             initialized: AtomicBool::new(self.initialized.load(Ordering::SeqCst)),
             oauth_cache: self.oauth_cache.clone(),
-            client_capabilities: self.client_capabilities.clone(),
+            client_capabilities: Mutex::new(self.client_capabilities.lock().unwrap().clone()),
             resource_templates_dir: self.resource_templates_dir.clone(),
             cached_resource_templates: Mutex::new(
                 self.cached_resource_templates.lock().unwrap().clone(),
@@ -82,7 +82,7 @@ impl ServerState {
             subscription_manager,
             initialized: AtomicBool::new(false),
             oauth_cache: TokenCache::new(),
-            client_capabilities: None,
+            client_capabilities: Mutex::new(None),
             resource_templates_dir: None,
             cached_resource_templates: Mutex::new(Vec::new()),
             task_manager: Arc::new(crate::task_manager::TaskManager::new()),
@@ -97,6 +97,17 @@ impl ServerState {
     /// Check if the server is initialized.
     pub fn is_initialized(&self) -> bool {
         self.initialized.load(Ordering::SeqCst)
+    }
+
+    /// Store client capabilities from the initialize request.
+    pub fn set_client_capabilities(&self, caps: ClientCapabilities) {
+        let mut caps_guard = self.client_capabilities.lock().unwrap();
+        *caps_guard = Some(caps);
+    }
+
+    /// Get client capabilities if set during initialization.
+    pub fn get_client_capabilities(&self) -> Option<ClientCapabilities> {
+        self.client_capabilities.lock().unwrap().clone()
     }
 
     pub fn with_tools_dir(mut self, path: PathBuf) -> Self {

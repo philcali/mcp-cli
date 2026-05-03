@@ -17,6 +17,8 @@
 pub mod auth;
 pub mod discovery;
 pub mod handlers;
+#[cfg(feature = "http")]
+pub mod http_server;
 pub mod protocol;
 pub mod routing;
 pub mod server;

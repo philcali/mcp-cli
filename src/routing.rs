@@ -7,7 +7,7 @@ pub async fn route_request(
     method: &str,
     params: &serde_json::Value,
     initialized: bool,
-    server: &mut crate::server::McpServer,
+    server: &crate::server::McpServer,
 ) -> anyhow::Result<serde_json::Value> {
     match method {
         "initialize" => crate::handlers::handle_initialize(server, params).await,

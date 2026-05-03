@@ -9,7 +9,7 @@ use tracing::{debug, info};
 
 /// Initialize connection and negotiate capabilities.
 pub async fn handle_initialize(
-    server: &mut crate::server::McpServer,
+    server: &crate::server::McpServer,
     params: &serde_json::Value,
 ) -> Result<serde_json::Value> {
     let init_params: InitParams =
@@ -54,9 +54,9 @@ pub async fn handle_initialize(
     }
 
     // Store client capabilities for later use (e.g., sampling)
-    let mut new_state = (*server.state).clone();
-    new_state.client_capabilities = Some(init_params.capabilities);
-    server.state = std::sync::Arc::new(new_state);
+    server
+        .state
+        .set_client_capabilities(init_params.capabilities);
 
     // Set initialized flag on successful initialization (via Arc)
     server

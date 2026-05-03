@@ -39,6 +39,16 @@ struct Cli {
     #[arg(long, short)]
     daemon: bool,
 
+    /// Run as HTTP server (MCP Streamable HTTP transport)
+    #[cfg(feature = "http")]
+    #[arg(long, conflicts_with = "daemon")]
+    http: bool,
+
+    /// HTTP bind address (only with --http)
+    #[cfg(feature = "http")]
+    #[arg(long, default_value = "127.0.0.1:3000", requires = "http")]
+    http_addr: Option<String>,
+
     /// Log level (TRACE, DEBUG, INFO, WARN, ERROR)
     #[arg(long, default_value = "info")]
     log_level: String,
@@ -193,7 +203,7 @@ async fn main() -> Result<()> {
         builder = builder.with_logging();
     }
 
-    let mut srv = builder.build();
+    let srv = builder.build();
 
     // Start watchers if directories are configured
     if tools_dir.is_some() {
@@ -238,6 +248,24 @@ async fn main() -> Result<()> {
 
     info!("MCP server starting...");
 
+    #[cfg(feature = "http")]
+    if cli.http {
+        let addr: std::net::SocketAddr = cli
+            .http_addr
+            .as_deref()
+            .unwrap_or("127.0.0.1:3000")
+            .parse()
+            .expect("Invalid HTTP address");
+        info!("Running in HTTP mode on {}", addr);
+        srv.run_http(addr).await?;
+    } else if cli.daemon {
+        info!("Running in daemon mode (persistent server)");
+        srv.run_daemon().await?;
+    } else {
+        srv.run().await?;
+    }
+
+    #[cfg(not(feature = "http"))]
     if cli.daemon {
         info!("Running in daemon mode (persistent server)");
         srv.run_daemon().await?;

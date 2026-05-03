@@ -7,6 +7,7 @@ use crate::protocol::{
 use crate::watcher::{FileSystemWatcher, WatchConfig};
 use anyhow::Result;
 use serde_json::json;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -55,6 +56,23 @@ pub struct McpServer {
     pub(crate) stdout: Option<std::sync::Arc<tokio::sync::Mutex<tokio::io::Stdout>>>,
     /// Pending sampling request: (request_id, sender for client response)
     pub(crate) pending_sampling: Option<PendingSampling>,
+    /// Pending requests for HTTP transport (supports multiple concurrent requests)
+    pub(crate) pending_requests:
+        std::sync::Arc<tokio::sync::Mutex<HashMap<String, oneshot::Sender<serde_json::Value>>>>,
+}
+
+impl Clone for McpServer {
+    fn clone(&self) -> Self {
+        Self {
+            state: Arc::clone(&self.state),
+            capabilities: self.capabilities.clone(),
+            prompt_cache_config: self.prompt_cache_config.clone(),
+            notification_tx: self.notification_tx.clone(),
+            stdout: self.stdout.clone(),
+            pending_sampling: self.pending_sampling.clone(),
+            pending_requests: Arc::clone(&self.pending_requests),
+        }
+    }
 }
 
 impl Default for McpServer {
@@ -80,6 +98,7 @@ impl McpServer {
             notification_tx: Some(std::sync::Arc::new(notification_tx)),
             stdout,
             pending_sampling: None,
+            pending_requests: std::sync::Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         }
     }
 
@@ -109,6 +128,26 @@ impl McpServer {
     /// Clear the pending sampling request.
     pub fn clear_pending_sampling(&mut self) {
         self.pending_sampling = None;
+    }
+
+    /// Add a pending request for HTTP transport (supports multiple concurrent requests).
+    pub async fn add_pending_request(
+        &self,
+        id: String,
+        sender: oneshot::Sender<serde_json::Value>,
+    ) {
+        let mut map = self.pending_requests.lock().await;
+        map.insert(id, sender);
+    }
+
+    /// Try to resolve a pending request by ID. Returns true if matched and resolved.
+    pub async fn resolve_pending_request(&self, id: &str, response: serde_json::Value) -> bool {
+        let mut map = self.pending_requests.lock().await;
+        if let Some(sender) = map.remove(id) {
+            let _ = sender.send(response);
+            return true;
+        }
+        false
     }
 
     pub fn with_prompt_cache_config(mut self, config: PromptCacheConfig) -> Self {
@@ -456,8 +495,14 @@ impl McpServer {
         })
     }
 
+    /// Run as an HTTP server (MCP Streamable HTTP transport).
+    #[cfg(feature = "http")]
+    pub async fn run_http(&self, addr: std::net::SocketAddr) -> Result<()> {
+        crate::http_server::run_http(self, addr).await
+    }
+
     /// Run in one-shot mode: process stdin until EOF, then exit.
-    pub async fn run(&mut self) -> Result<()> {
+    pub async fn run(&self) -> Result<()> {
         // Start notification sender background task if we have a channel
         let _notification_handle = self.notification_tx.as_ref().and_then(|tx| {
             self.stdout
@@ -504,7 +549,7 @@ impl McpServer {
 
     /// Run in daemon mode with graceful shutdown support.
     /// Blocks until SIGINT or SIGTERM is received.
-    pub async fn run_daemon(&mut self) -> Result<()> {
+    pub async fn run_daemon(&self) -> Result<()> {
         // Start notification sender background task if we have a channel
         let _notification_handle = self.notification_tx.as_ref().and_then(|tx| {
             self.stdout
@@ -548,20 +593,16 @@ impl McpServer {
 
     /// Process a single line from stdin: check for sampling responses, then handle as a request.
     async fn process_message(
-        &mut self,
+        &self,
         line: &str,
         stdout: &std::sync::Arc<tokio::sync::Mutex<tokio::io::Stdout>>,
     ) -> Result<bool> {
         // Check if this is a response to a pending sampling request
-        if let Some((pending_id, sender)) = &self.pending_sampling
-            && let Ok(response) = serde_json::from_str::<serde_json::Value>(line)
-            && response.get("id").and_then(|v| v.as_str()) == Some(pending_id)
+        if let Ok(response) = serde_json::from_str::<serde_json::Value>(line)
+            && let Some(id) = response.get("id").and_then(|v| v.as_str())
+            && self.resolve_pending_request(id, response.clone()).await
         {
             info!("Received sampling response from client");
-            let mut guard = sender.lock().await;
-            if let Some(tx) = guard.take() {
-                let _ = tx.send(response);
-            }
             return Ok(false);
         }
 
@@ -600,7 +641,7 @@ impl McpServer {
 
     /// Internal stdin loop - processes lines until EOF, then returns.
     async fn stdin_loop(
-        &mut self,
+        &self,
         stdout: &std::sync::Arc<tokio::sync::Mutex<tokio::io::Stdout>>,
     ) -> Result<()> {
         let stdin = tokio::io::stdin();
@@ -629,7 +670,7 @@ impl McpServer {
         }
     }
 
-    async fn handle_request(&mut self, line: &str, initialized: bool) -> Result<String> {
+    async fn handle_request(&self, line: &str, initialized: bool) -> Result<String> {
         let raw: serde_json::Value = serde_json::from_str(line)?;
 
         // If there's no id, it's a notification — handle but don't send a response
@@ -667,7 +708,7 @@ impl McpServer {
     }
 
     async fn route_request(
-        &mut self,
+        &self,
         method: &str,
         params: &serde_json::Value,
         initialized: bool,
