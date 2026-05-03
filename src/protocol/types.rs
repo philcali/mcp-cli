@@ -120,6 +120,8 @@ pub struct ClientCapabilities {
     pub roots: Option<RootsCapability>,
     #[serde(default)]
     pub sampling: Option<SamplingCapability>,
+    #[serde(default)]
+    pub elicitation: Option<ElicitationCapability>,
 }
 
 /// Roots capability from client.
@@ -1385,6 +1387,71 @@ pub struct TaskResult {
     pub result: serde_json::Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<serde_json::Value>,
+}
+
+// ===========================================================================
+// ELICITATION SUPPORT
+// ===========================================================================
+
+/// Elicitation capability declared by client.
+/// Supports form mode (structured data) and url mode (external interactions).
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ElicitationCapability {
+    #[serde(default)]
+    pub form: Option<bool>,
+    #[serde(default)]
+    pub url: Option<bool>,
+}
+
+/// Elicitation mode.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub enum ElicitationMode {
+    Form,
+    Url,
+}
+
+/// Response action from elicitation.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub enum ElicitationAction {
+    Accept,
+    Decline,
+    Cancel,
+}
+
+/// Parameters for elicitation/create request.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ElicitationCreateParams {
+    /// Mode: "form" (default) or "url"
+    #[serde(default)]
+    pub mode: Option<ElicitationMode>,
+    /// Human-readable message explaining why elicitation is needed.
+    pub message: String,
+    /// JSON Schema for form mode (required when mode is Form).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_schema: Option<serde_json::Value>,
+    /// URL for url mode (required when mode is Url).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// Unique identifier for url mode elicitation.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "elicitationId"
+    )]
+    pub elicitation_id: Option<String>,
+}
+
+/// Result of elicitation/create.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ElicitationResult {
+    pub action: ElicitationAction,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<serde_json::Value>,
 }
 
 impl std::error::Error for InitError {}

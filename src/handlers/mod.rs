@@ -1,6 +1,7 @@
 //! Handler modules for different MCP capabilities.
 
 pub mod completion;
+pub mod elicitation;
 pub mod init;
 pub mod logging;
 pub mod ping;
@@ -14,6 +15,7 @@ pub mod tools;
 
 // Re-export common types and utilities
 pub use completion::handle_completion_complete;
+pub use elicitation::handle_elicitation_create;
 pub use init::handle_initialize;
 pub use logging::handle_logging_messages;
 pub use ping::handle_ping;
