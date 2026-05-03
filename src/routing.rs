@@ -39,6 +39,7 @@ pub async fn route_request(
         "tasks/list" => crate::handlers::handle_tasks_list(server, params).await,
         "tasks/result" => crate::handlers::handle_tasks_result(server, params).await,
         "tasks/cancel" => crate::handlers::handle_tasks_cancel(server, params).await,
+        "elicitation/create" => crate::handlers::handle_elicitation_create(server, params).await,
         _ => Err(anyhow::anyhow!("Unknown method: {}", method)),
     }
 }
@@ -85,4 +86,8 @@ pub const KNOWN_METHODS: &[(&str, &str)] = &[
     ("tasks/list", "List tasks"),
     ("tasks/result", "Get task result (blocking)"),
     ("tasks/cancel", "Cancel a running task"),
+    (
+        "elicitation/create",
+        "Request structured data from users through the client",
+    ),
 ];
