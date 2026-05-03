@@ -20,6 +20,12 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clap = { version = "4", features = ["derive"] }
 notify = "6"
 reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"] }
+axum = { version = "0.8", optional = true }
+async-stream = { version = "0.3", optional = true }
+futures = { version = "0.3", optional = true }
+
+[features]
+http = ["dep:axum", "dep:async-stream", "dep:futures"]
 
 [dev-dependencies]
 tempfile = "3"
