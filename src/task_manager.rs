@@ -232,8 +232,6 @@ impl Default for TaskManager {
         Self::new()
     }
 }
-
-/// Convert days since Unix epoch (1970-01-01) to (year, month, day).
 fn days_to_ymd(days: u64) -> (u64, u64, u64) {
     let mut y: i32 = 1970;
     let mut d = days as i32;
@@ -319,4 +317,221 @@ fn date_to_days(y: i32, m: i32, d: i32) -> i64 {
     }
     total += (d - 1) as i64;
     total
+}
+
+/// Convert days since Unix epoch (1970-01-01) to (year, month, day).
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_task_state_is_terminal() {
+        assert!(!TaskState::Working.is_terminal());
+        assert!(!TaskState::InputRequired.is_terminal());
+        assert!(TaskState::Completed.is_terminal());
+        assert!(TaskState::Failed.is_terminal());
+        assert!(TaskState::Cancelled.is_terminal());
+    }
+
+    #[test]
+    fn test_create_and_get_task() {
+        let mgr = TaskManager::new();
+        let id = mgr.create_task("tools/call", None);
+
+        assert!(id.starts_with("task_"));
+
+        let task = mgr.get_task(&id).expect("task should exist");
+        assert_eq!(task.task_id, id);
+        assert_eq!(task.state, TaskState::Working);
+        assert!(!task.created_at.is_empty());
+        assert!(!task.last_updated_at.is_empty());
+        assert_eq!(task.ttl, None);
+        assert_eq!(task.poll_interval, Some(1000));
+    }
+
+    #[test]
+    fn test_create_task_with_ttl() {
+        let mgr = TaskManager::new();
+        let id = mgr.create_task("tools/call", Some(5000));
+
+        let task = mgr.get_task(&id).expect("task should exist");
+        assert_eq!(task.ttl, Some(5000));
+    }
+
+    #[test]
+    fn test_get_nonexistent_task() {
+        let mgr = TaskManager::new();
+        assert!(mgr.get_task("nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_list_tasks_empty() {
+        let mgr = TaskManager::new();
+        let tasks = mgr.list_tasks(None);
+        assert!(tasks.is_empty());
+    }
+
+    #[test]
+    fn test_list_tasks_with_filter() {
+        let mgr = TaskManager::new();
+        mgr.create_task("m1", None);
+        mgr.create_task("m2", None);
+
+        // Complete one
+        let id3 = mgr.create_task("m3", None);
+        mgr.complete_task(&id3, json!({ "ok": true }));
+
+        let all = mgr.list_tasks(None);
+        assert_eq!(all.len(), 3);
+
+        let working: Vec<Task> = mgr.list_tasks(Some(vec![TaskState::Working]));
+        assert_eq!(working.len(), 2);
+        assert!(working.iter().all(|t| t.state == TaskState::Working));
+
+        let completed: Vec<Task> = mgr.list_tasks(Some(vec![TaskState::Completed]));
+        assert_eq!(completed.len(), 1);
+    }
+
+    #[test]
+    fn test_complete_task() {
+        let mgr = TaskManager::new();
+        let id = mgr.create_task("tools/call", None);
+
+        mgr.complete_task(&id, json!({ "data": "result" }));
+
+        let task = mgr.get_task(&id).expect("task should exist");
+        assert_eq!(task.state, TaskState::Completed);
+        assert!(task.status_message.as_ref().unwrap().contains("completed"));
+    }
+
+    #[test]
+    fn test_fail_task() {
+        let mgr = TaskManager::new();
+        let id = mgr.create_task("tools/call", None);
+
+        mgr.fail_task(&id, json!({ "error": "something broke" }));
+
+        let task = mgr.get_task(&id).expect("task should exist");
+        assert_eq!(task.state, TaskState::Failed);
+        assert_eq!(
+            task.status_message.as_ref().unwrap().as_str(),
+            "something broke"
+        );
+    }
+
+    #[test]
+    fn test_fail_task_without_error_message() {
+        let mgr = TaskManager::new();
+        let id = mgr.create_task("tools/call", None);
+
+        mgr.fail_task(&id, json!({ "code": 500 }));
+
+        let task = mgr.get_task(&id).expect("task should exist");
+        assert_eq!(task.state, TaskState::Failed);
+        assert_eq!(
+            task.status_message.as_ref().unwrap().as_str(),
+            "Task failed"
+        );
+    }
+
+    #[test]
+    fn test_cancel_working_task() {
+        let mgr = TaskManager::new();
+        let id = mgr.create_task("tools/call", None);
+
+        let result = mgr.cancel_task(&id);
+        assert!(result);
+
+        let task = mgr.get_task(&id).expect("task should exist");
+        assert_eq!(task.state, TaskState::Cancelled);
+    }
+
+    #[test]
+    fn test_cancel_terminal_task_fails() {
+        let mgr = TaskManager::new();
+        let id = mgr.create_task("tools/call", None);
+        mgr.complete_task(&id, json!({ "ok": true }));
+
+        let result = mgr.cancel_task(&id);
+        assert!(!result);
+
+        let task = mgr.get_task(&id).expect("task should exist");
+        assert_eq!(task.state, TaskState::Completed);
+    }
+
+    #[test]
+    fn test_cancel_nonexistent_task() {
+        let mgr = TaskManager::new();
+        assert!(!mgr.cancel_task("nonexistent"));
+    }
+
+    #[tokio::test]
+    async fn test_wait_for_result_task_still_working() {
+        let mgr = TaskManager::new();
+        let id = mgr.create_task("tools/call", None);
+
+        let rx = mgr.wait_for_result(&id).expect("should return receiver");
+
+        // Complete from another reference
+        mgr.complete_task(&id, json!({ "answer": 42 }));
+
+        let result = rx.await.expect("channel should not be closed");
+        assert_eq!(result, json!({ "answer": 42 }));
+    }
+
+    #[tokio::test]
+    async fn test_wait_for_result_already_completed() {
+        let mgr = TaskManager::new();
+        let id = mgr.create_task("tools/call", None);
+        mgr.complete_task(&id, json!({ "done": true }));
+
+        // Should return None for terminal tasks
+        let rx = mgr.wait_for_result(&id);
+        assert!(rx.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_wait_for_result_nonexistent_task() {
+        let mgr = TaskManager::new();
+        let rx = mgr.wait_for_result("nonexistent");
+        assert!(rx.is_none());
+    }
+
+    #[test]
+    fn test_cleanup_expired_tasks() {
+        let mgr = TaskManager::new();
+
+        // Task with no TTL should never expire
+        mgr.create_task("m1", None);
+
+        // Task with very large TTL should not expire
+        mgr.create_task("m2", Some(u64::MAX));
+
+        let cleaned = mgr.cleanup_expired();
+        assert_eq!(cleaned, 0);
+
+        let tasks = mgr.list_tasks(None);
+        assert_eq!(tasks.len(), 2);
+    }
+
+    #[test]
+    fn test_cleanup_no_tasks() {
+        let mgr = TaskManager::new();
+        let cleaned = mgr.cleanup_expired();
+        assert_eq!(cleaned, 0);
+    }
+
+    #[test]
+    fn test_complete_nonexistent_task_no_panic() {
+        let mgr = TaskManager::new();
+        mgr.complete_task("nonexistent", json!({ "ok": true }));
+        // Should not panic, just silently ignore
+    }
+
+    #[test]
+    fn test_fail_nonexistent_task_no_panic() {
+        let mgr = TaskManager::new();
+        mgr.fail_task("nonexistent", json!({ "error": "nope" }));
+        // Should not panic, just silently ignore
+    }
 }
