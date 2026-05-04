@@ -22,6 +22,7 @@ pub async fn route_request(
         _ if !initialized && method != "ping" => Err(anyhow::anyhow!("Server not initialized")),
         "initialized" => Ok(json!({})),
         "logging/messages" => crate::handlers::handle_logging_messages(server, params).await,
+        "logging/setLevel" => crate::handlers::handle_logging_set_level(server, params).await,
         "ping" => crate::handlers::handle_ping(server),
         "roots/list" => crate::handlers::handle_roots_list(server).await,
         "tools/list" => crate::handlers::handle_tools_list(server).await,
@@ -52,6 +53,7 @@ pub const KNOWN_METHODS: &[(&str, &str)] = &[
     ),
     ("initialized", "Notification that client is initialized"),
     ("logging/messages", "Send log message to server"),
+    ("logging/setLevel", "Set minimum log level for server"),
     (
         "ping",
         "Health check - returns server status and capabilities",

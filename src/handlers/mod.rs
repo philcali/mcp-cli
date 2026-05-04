@@ -17,7 +17,7 @@ pub mod tools;
 pub use completion::handle_completion_complete;
 pub use elicitation::handle_elicitation_create;
 pub use init::handle_initialize;
-pub use logging::handle_logging_messages;
+pub use logging::{handle_logging_messages, handle_logging_set_level};
 pub use ping::handle_ping;
 pub use prompts::{handle_prompts_get, handle_prompts_list};
 pub use resources::{
