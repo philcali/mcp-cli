@@ -12,7 +12,7 @@ use crate::auth::TokenCache;
 use crate::discovery::prompts::{PromptEntry, discover_prompts};
 use crate::discovery::resources::{ResourceEntry, discover_resources};
 use crate::discovery::tools::{ToolDefinition, discover_tools};
-use crate::protocol::{ClientCapabilities, MemorySubscriptionManager, ResourceManager};
+use crate::protocol::{ClientCapabilities, LogLevel, MemorySubscriptionManager, ResourceManager};
 
 pub struct ServerState {
     pub name: String,
@@ -37,6 +37,8 @@ pub struct ServerState {
     pub cached_resource_templates: Mutex<Vec<crate::discovery::resources::ResourceTemplateEntry>>,
     /// Task manager for task-augmented requests
     pub task_manager: std::sync::Arc<crate::task_manager::TaskManager>,
+    /// Current minimum log level for logging/messages (set by client via logging/setLevel)
+    pub log_level: std::sync::Arc<std::sync::RwLock<LogLevel>>,
 }
 
 impl Clone for ServerState {
@@ -60,6 +62,7 @@ impl Clone for ServerState {
                 self.cached_resource_templates.lock().unwrap().clone(),
             ),
             task_manager: Arc::clone(&self.task_manager),
+            log_level: Arc::clone(&self.log_level),
         }
     }
 }
@@ -86,6 +89,7 @@ impl ServerState {
             resource_templates_dir: None,
             cached_resource_templates: Mutex::new(Vec::new()),
             task_manager: Arc::new(crate::task_manager::TaskManager::new()),
+            log_level: Arc::new(std::sync::RwLock::new(LogLevel::Debug)),
         }
     }
 

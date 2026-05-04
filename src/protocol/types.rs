@@ -990,7 +990,7 @@ pub struct CompleteResult {
 // ===========================================================================
 
 /// Log message level.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum LogLevel {
     Debug,
@@ -1021,6 +1021,12 @@ pub struct LogMessageResult {
     // MCP spec doesn't define any result fields for this method
     #[serde(skip_serializing)]
     _empty: (),
+}
+
+/// Parameters for logging/setLevel notification.
+#[derive(Debug, Deserialize)]
+pub struct SetLevelParams {
+    pub level: LogLevel,
 }
 
 // ===========================================================================
