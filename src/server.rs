@@ -59,6 +59,9 @@ pub struct McpServer {
     /// Pending requests for HTTP transport (supports multiple concurrent requests)
     pub(crate) pending_requests:
         std::sync::Arc<tokio::sync::Mutex<HashMap<String, oneshot::Sender<serde_json::Value>>>>,
+    /// Maps elicitation_id → request_id for URL-mode elicitations.
+    /// Resolved by the elicitation/complete notification handler.
+    pub(crate) elicitation_map: std::sync::Arc<tokio::sync::Mutex<HashMap<String, String>>>,
 }
 
 impl Clone for McpServer {
@@ -71,6 +74,7 @@ impl Clone for McpServer {
             stdout: self.stdout.clone(),
             pending_sampling: self.pending_sampling.clone(),
             pending_requests: Arc::clone(&self.pending_requests),
+            elicitation_map: Arc::clone(&self.elicitation_map),
         }
     }
 }
@@ -99,6 +103,7 @@ impl McpServer {
             stdout,
             pending_sampling: None,
             pending_requests: std::sync::Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            elicitation_map: std::sync::Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         }
     }
 
@@ -148,6 +153,30 @@ impl McpServer {
             return true;
         }
         false
+    }
+
+    /// Register an elicitation_id → request_id mapping for URL-mode elicitations.
+    pub async fn register_elicitation(&self, elicitation_id: String, request_id: String) {
+        let mut map = self.elicitation_map.lock().await;
+        map.insert(elicitation_id, request_id);
+    }
+
+    /// Resolve a pending elicitation by elicitation_id.
+    /// Looks up the internal request_id, then resolves the pending request.
+    pub async fn resolve_pending_elicitation(
+        &self,
+        elicitation_id: &str,
+        response: serde_json::Value,
+    ) -> bool {
+        let request_id = {
+            let mut map = self.elicitation_map.lock().await;
+            map.remove(elicitation_id)
+        };
+        if let Some(rid) = request_id {
+            self.resolve_pending_request(&rid, response).await
+        } else {
+            false
+        }
     }
 
     pub fn with_prompt_cache_config(mut self, config: PromptCacheConfig) -> Self {
@@ -478,6 +507,26 @@ impl McpServer {
         )
     }
 
+    /// Set up task status change notification callback on the task manager.
+    pub fn setup_task_status_notifications(&self) {
+        let notification_tx = self.notification_tx.clone();
+        let callback = Box::new(move |task: &crate::protocol::Task| {
+            if let Some(ref tx) = notification_tx {
+                let msg = json!({
+                    "jsonrpc": "2.0",
+                    "method": "notifications/tasks/status",
+                    "params": {
+                        "task": task
+                    }
+                });
+                let _ = tx.send(msg.to_string());
+            }
+        });
+        self.state
+            .task_manager
+            .set_status_changed_callback(callback);
+    }
+
     /// Start background task that sends notifications from the broadcast channel to stdout.
     fn start_notification_sender(
         notification_tx: std::sync::Arc<broadcast::Sender<String>>,
@@ -509,6 +558,9 @@ impl McpServer {
                 .as_ref()
                 .map(|stdout| Self::start_notification_sender(Arc::clone(tx), Arc::clone(stdout)))
         });
+
+        // Wire up task status change notifications
+        self.setup_task_status_notifications();
 
         let stdin = tokio::io::stdin();
         let mut reader = BufReader::new(stdin).lines();
@@ -556,6 +608,9 @@ impl McpServer {
                 .as_ref()
                 .map(|stdout| Self::start_notification_sender(Arc::clone(tx), Arc::clone(stdout)))
         });
+
+        // Wire up task status change notifications
+        self.setup_task_status_notifications();
 
         // Set up signal handlers for Unix platforms
         #[cfg(unix)]

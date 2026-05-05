@@ -29,8 +29,10 @@ struct AppState {
 
 /// Start the HTTP server on the given address.
 pub async fn run_http(server: &McpServer, addr: SocketAddr) -> Result<()> {
+    let server = server.clone();
+    server.setup_task_status_notifications();
     let state = AppState {
-        server: Arc::new(server.clone()),
+        server: Arc::new(server),
     };
 
     let app = Router::new()

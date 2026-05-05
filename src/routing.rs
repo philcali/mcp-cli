@@ -19,6 +19,16 @@ pub async fn route_request(
         "resources/templates/list" => crate::handlers::handle_resource_templates_list(server).await,
         // After initialize succeeds, server will be marked initialized
         // We only reject requests if explicitly not initialized (initialize not yet called)
+        // Notifications and elicitation/complete are allowed before init
+        "elicitation/complete" => {
+            crate::handlers::handle_elicitation_complete(server, params).await
+        }
+        "notifications/progress" => {
+            crate::handlers::handle_notifications_progress(server, params).await
+        }
+        "notifications/cancelled" => {
+            crate::handlers::handle_notifications_cancelled(server, params).await
+        }
         _ if !initialized && method != "ping" => Err(anyhow::anyhow!("Server not initialized")),
         "initialized" => Ok(json!({})),
         "logging/messages" => crate::handlers::handle_logging_messages(server, params).await,
@@ -92,4 +102,13 @@ pub const KNOWN_METHODS: &[(&str, &str)] = &[
         "elicitation/create",
         "Request structured data from users through the client",
     ),
+    (
+        "elicitation/complete",
+        "Notification: client completed URL-mode elicitation",
+    ),
+    (
+        "notifications/progress",
+        "Send progress update for a long-running request",
+    ),
+    ("notifications/cancelled", "Cancel an in-flight request"),
 ];

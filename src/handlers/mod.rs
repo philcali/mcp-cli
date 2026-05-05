@@ -4,6 +4,7 @@ pub mod completion;
 pub mod elicitation;
 pub mod init;
 pub mod logging;
+pub mod notifications;
 pub mod ping;
 pub mod prompts;
 pub mod resources;
@@ -15,9 +16,13 @@ pub mod tools;
 
 // Re-export common types and utilities
 pub use completion::handle_completion_complete;
-pub use elicitation::handle_elicitation_create;
+pub use elicitation::{handle_elicitation_complete, handle_elicitation_create};
 pub use init::handle_initialize;
 pub use logging::{handle_logging_messages, handle_logging_set_level};
+pub use notifications::{
+    handle_notifications_cancelled, handle_notifications_progress, is_request_cancelled,
+    send_progress,
+};
 pub use ping::handle_ping;
 pub use prompts::{handle_prompts_get, handle_prompts_list};
 pub use resources::{

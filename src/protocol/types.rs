@@ -20,6 +20,16 @@ pub struct JsonRpcRequest {
     pub params: serde_json::Value,
     #[serde(rename = "id")]
     pub id_value: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub _meta: Option<JsonRpcMeta>,
+}
+
+/// Optional metadata on JSON-RPC messages (carries progress tokens, task IDs, etc.).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JsonRpcMeta {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress_token: Option<serde_json::Value>,
 }
 
 /// Base JSON-RPC 2.0 notification structure (no id).
@@ -986,6 +996,37 @@ pub struct CompleteResult {
 }
 
 // ===========================================================================
+// SHARED UTILITIES: PROGRESS + CANCELLATION
+// ===========================================================================
+
+/// Parameters for notifications/progress.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProgressParams {
+    /// The progress token that was included in the _meta of the request.
+    #[serde(rename = "progressToken")]
+    pub progress_token: serde_json::Value,
+    /// Amount of progress made.
+    pub progress: f64,
+    /// Optional total amount of work.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total: Option<f64>,
+    /// Optional human-readable message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+/// Parameters for notifications/cancelled.
+#[derive(Debug, Deserialize)]
+pub struct CancelParams {
+    /// The ID of the request to cancel.
+    #[serde(rename = "requestId")]
+    pub request_id: serde_json::Value,
+    /// Optional reason for cancellation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
 // LOGGING SUPPORT
 // ===========================================================================
 
@@ -1458,6 +1499,16 @@ pub struct ElicitationResult {
     pub action: ElicitationAction,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<serde_json::Value>,
+}
+
+/// Parameters for elicitation/complete notification (client signals URL mode done).
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ElicitationCompleteParams {
+    #[serde(rename = "elicitationId")]
+    pub elicitation_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<ElicitationResult>,
 }
 
 impl std::error::Error for InitError {}
