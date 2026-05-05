@@ -1,6 +1,8 @@
 //! Elicitation handler for requesting user input from the client.
 
-use crate::protocol::{ElicitationCreateParams, ElicitationMode, ElicitationResult};
+use crate::protocol::{
+    ElicitationCompleteParams, ElicitationCreateParams, ElicitationMode, ElicitationResult,
+};
 use anyhow::{Context, Result};
 use serde_json::json;
 use tracing::info;
@@ -109,6 +111,16 @@ pub async fn handle_elicitation_create(
     // Store in pending_requests for main loop (stdio) or POST handler (HTTP) to resolve
     server.add_pending_request(request_id.clone(), tx).await;
 
+    // For URL mode, register the elicitation_id → request_id mapping
+    // so the client can resolve via notifications/elicitation/complete
+    if matches!(mode, ElicitationMode::Url)
+        && let Some(ref elicitation_id) = elicitation_params.elicitation_id
+    {
+        server
+            .register_elicitation(elicitation_id.clone(), request_id.clone())
+            .await;
+    }
+
     // Send through the notification broadcast channel.
     // For stdio: the notification sender writes it to stdout.
     // For HTTP: the SSE stream picks it up and sends it to the client.
@@ -131,4 +143,39 @@ pub async fn handle_elicitation_create(
         "action": result.action,
         "content": result.content,
     }))
+}
+
+/// Handle notifications/elicitation/complete from the client.
+///
+/// The client sends this notification when a URL-mode elicitation interaction
+/// finishes externally. The server resolves the corresponding pending request.
+pub async fn handle_elicitation_complete(
+    server: &crate::server::McpServer,
+    params: &serde_json::Value,
+) -> Result<serde_json::Value> {
+    let complete_params: ElicitationCompleteParams = serde_json::from_value(params.clone())
+        .context("Failed to parse elicitation/complete parameters")?;
+
+    let result = complete_params.result.unwrap_or_else(|| ElicitationResult {
+        action: crate::protocol::ElicitationAction::Accept,
+        content: Some(json!({})),
+    });
+
+    let resolved = server
+        .resolve_pending_elicitation(&complete_params.elicitation_id, json!(&result))
+        .await;
+
+    if resolved {
+        info!(
+            "elicitation/complete: resolved elicitation_id={}",
+            complete_params.elicitation_id
+        );
+    } else {
+        info!(
+            "elicitation/complete: no pending elicitation for id={}",
+            complete_params.elicitation_id
+        );
+    }
+
+    Ok(json!({}))
 }

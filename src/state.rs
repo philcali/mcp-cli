@@ -39,6 +39,9 @@ pub struct ServerState {
     pub task_manager: std::sync::Arc<crate::task_manager::TaskManager>,
     /// Current minimum log level for logging/messages (set by client via logging/setLevel)
     pub log_level: std::sync::Arc<std::sync::RwLock<LogLevel>>,
+    /// Set of request IDs that have been cancelled via notifications/cancelled.
+    /// Handlers can check this to detect cancellation.
+    pub cancelled_requests: Mutex<HashMap<serde_json::Value, String>>,
 }
 
 impl Clone for ServerState {
@@ -63,6 +66,7 @@ impl Clone for ServerState {
             ),
             task_manager: Arc::clone(&self.task_manager),
             log_level: Arc::clone(&self.log_level),
+            cancelled_requests: Mutex::new(self.cancelled_requests.lock().unwrap().clone()),
         }
     }
 }
@@ -90,6 +94,7 @@ impl ServerState {
             cached_resource_templates: Mutex::new(Vec::new()),
             task_manager: Arc::new(crate::task_manager::TaskManager::new()),
             log_level: Arc::new(std::sync::RwLock::new(LogLevel::Debug)),
+            cancelled_requests: Mutex::new(HashMap::new()),
         }
     }
 

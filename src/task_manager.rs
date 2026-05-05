@@ -9,6 +9,9 @@ use tracing::debug;
 
 use crate::protocol::{Task, TaskResult, TaskState};
 
+type StatusChangedCallback =
+    std::sync::Arc<std::sync::Mutex<Option<Box<dyn Fn(&Task) + Send + Sync>>>>;
+
 /// Internal entry holding task metadata, result, and waiter.
 struct TaskEntry {
     task: Task,
@@ -19,13 +22,22 @@ struct TaskEntry {
 /// In-memory manager for task lifecycle.
 pub struct TaskManager {
     tasks: Mutex<HashMap<String, TaskEntry>>,
+    /// Optional callback to emit task status change notifications.
+    /// Receives the task after the state transition.
+    status_changed: StatusChangedCallback,
 }
 
 impl TaskManager {
     pub fn new() -> Self {
         Self {
             tasks: Mutex::new(HashMap::new()),
+            status_changed: StatusChangedCallback::default(),
         }
+    }
+
+    /// Set a callback that fires whenever a task state changes.
+    pub fn set_status_changed_callback(&self, f: Box<dyn Fn(&Task) + Send + Sync>) {
+        *self.status_changed.lock().unwrap() = Some(f);
     }
 
     fn generate_id() -> String {
@@ -64,6 +76,13 @@ impl TaskManager {
 
     fn now_iso8601() -> String {
         Self::epoch_to_iso8601(Self::now_epoch_secs())
+    }
+
+    /// Fire the status_changed callback if one is set.
+    fn notify_status_changed(&self, task: &Task) {
+        if let Some(ref f) = *self.status_changed.lock().unwrap() {
+            f(task);
+        }
     }
 
     /// Create a new task and return its ID.
@@ -110,62 +129,85 @@ impl TaskManager {
 
     /// Mark a task as completed and store the result.
     pub fn complete_task(&self, task_id: &str, result: serde_json::Value) {
-        let mut tasks = self.tasks.lock().unwrap();
-        if let Some(entry) = tasks.get_mut(task_id) {
-            entry.task.state = TaskState::Completed;
-            entry.task.status_message = Some("Task completed successfully".to_string());
-            entry.task.last_updated_at = Self::now_iso8601();
-            entry.result = Some(TaskResult {
-                result: result.clone(),
-                error: None,
-            });
-            if let Some(tx) = entry.waiter.take() {
-                let _ = tx.send(result);
+        let task = {
+            let mut tasks = self.tasks.lock().unwrap();
+            if let Some(entry) = tasks.get_mut(task_id) {
+                entry.task.state = TaskState::Completed;
+                entry.task.status_message = Some("Task completed successfully".to_string());
+                entry.task.last_updated_at = Self::now_iso8601();
+                entry.result = Some(TaskResult {
+                    result: result.clone(),
+                    error: None,
+                });
+                if let Some(tx) = entry.waiter.take() {
+                    let _ = tx.send(result);
+                }
+                Some(entry.task.clone())
+            } else {
+                None
             }
+        };
+        if let Some(t) = task {
+            self.notify_status_changed(&t);
+            debug!("Task {} completed", task_id);
         }
-        drop(tasks);
-        debug!("Task {} completed", task_id);
     }
 
     /// Mark a task as failed.
     pub fn fail_task(&self, task_id: &str, error: serde_json::Value) {
-        let mut tasks = self.tasks.lock().unwrap();
-        if let Some(entry) = tasks.get_mut(task_id) {
-            entry.task.state = TaskState::Failed;
-            entry.task.status_message = error
-                .get("error")
-                .and_then(|v| v.as_str())
-                .map(String::from)
-                .or_else(|| Some("Task failed".to_string()));
-            entry.task.last_updated_at = Self::now_iso8601();
-            entry.result = Some(TaskResult {
-                result: serde_json::Value::Null,
-                error: Some(error.clone()),
-            });
-            if let Some(tx) = entry.waiter.take() {
-                let _ = tx.send(error);
+        let task = {
+            let mut tasks = self.tasks.lock().unwrap();
+            if let Some(entry) = tasks.get_mut(task_id) {
+                entry.task.state = TaskState::Failed;
+                entry.task.status_message = error
+                    .get("error")
+                    .and_then(|v| v.as_str())
+                    .map(String::from)
+                    .or_else(|| Some("Task failed".to_string()));
+                entry.task.last_updated_at = Self::now_iso8601();
+                entry.result = Some(TaskResult {
+                    result: serde_json::Value::Null,
+                    error: Some(error.clone()),
+                });
+                if let Some(tx) = entry.waiter.take() {
+                    let _ = tx.send(error);
+                }
+                Some(entry.task.clone())
+            } else {
+                None
             }
+        };
+        if let Some(t) = task {
+            self.notify_status_changed(&t);
+            debug!("Task {} failed", task_id);
         }
-        drop(tasks);
-        debug!("Task {} failed", task_id);
     }
 
     /// Cancel a task. Returns true if the task was successfully cancelled.
     pub fn cancel_task(&self, task_id: &str) -> bool {
-        let mut tasks = self.tasks.lock().unwrap();
-        if let Some(entry) = tasks.get_mut(task_id)
-            && entry.task.state == TaskState::Working
-        {
-            entry.task.state = TaskState::Cancelled;
-            entry.task.status_message = Some("Task cancelled by request".to_string());
-            entry.task.last_updated_at = Self::now_iso8601();
-            if let Some(tx) = entry.waiter.take() {
-                let _ = tx.send(json!({ "cancelled": true }));
+        let task = {
+            let mut tasks = self.tasks.lock().unwrap();
+            if let Some(entry) = tasks.get_mut(task_id)
+                && entry.task.state == TaskState::Working
+            {
+                entry.task.state = TaskState::Cancelled;
+                entry.task.status_message = Some("Task cancelled by request".to_string());
+                entry.task.last_updated_at = Self::now_iso8601();
+                if let Some(tx) = entry.waiter.take() {
+                    let _ = tx.send(json!({ "cancelled": true }));
+                }
+                Some(entry.task.clone())
+            } else {
+                None
             }
+        };
+        if let Some(t) = task {
+            self.notify_status_changed(&t);
             debug!("Task {} cancelled", task_id);
-            return true;
+            true
+        } else {
+            false
         }
-        false
     }
 
     /// Register a waiter for tasks/result.
