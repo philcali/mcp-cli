@@ -1,8 +1,8 @@
 //! MCP server implementation with stdio transport.
 
 use crate::protocol::{
-    JsonRpcError, JsonRpcNotification, JsonRpcRequest, PromptsCapability, ResourcesCapability,
-    SamplingCapability, ServerCapabilities, ToolsCapability,
+    JsonRpcError, JsonRpcNotification, JsonRpcRequest, LogLevel, PromptsCapability,
+    ResourcesCapability, SamplingCapability, ServerCapabilities, ToolsCapability,
 };
 use crate::watcher::{FileSystemWatcher, WatchConfig};
 use anyhow::Result;
@@ -10,6 +10,20 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+
+/// Map log levels to numeric priority (higher = more severe).
+fn log_level_to_priority(level: &LogLevel) -> u8 {
+    match level {
+        LogLevel::Debug => 0,
+        LogLevel::Info => 1,
+        LogLevel::Notice => 2,
+        LogLevel::Warning => 3,
+        LogLevel::Error => 4,
+        LogLevel::Critical => 5,
+        LogLevel::Alert => 6,
+        LogLevel::Emergency => 7,
+    }
+}
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tracing::{debug, error, info, warn};
@@ -97,7 +111,7 @@ impl McpServer {
 
         Self {
             state,
-            capabilities: ServerCapabilities::new(),
+            capabilities: ServerCapabilities::new().with_completions(),
             prompt_cache_config: PromptCacheConfig::default(),
             notification_tx: Some(std::sync::Arc::new(notification_tx)),
             stdout,
@@ -117,6 +131,27 @@ impl McpServer {
             });
             let _ = tx.send(msg.to_string());
         }
+    }
+
+    /// Send a log message notification to the client (server-to-client per MCP spec).
+    pub async fn send_log_notification(
+        &self,
+        level: LogLevel,
+        logger: Option<&str>,
+        message: &str,
+    ) {
+        let min_level = *self.state.log_level.read().unwrap();
+        // Filter by configured minimum log level
+        if log_level_to_priority(&level) < log_level_to_priority(&min_level) {
+            return;
+        }
+        let params = json!({
+            "level": level,
+            "logger": logger,
+            "data": message
+        });
+        self.send_notification("notifications/message", params)
+            .await;
     }
 
     /// Set up a pending sampling request and return the oneshot sender
@@ -256,6 +291,7 @@ impl McpServer {
     pub fn enable_resources(mut self, list_changed: bool) -> Self {
         self.capabilities.resources = Some(ResourcesCapability {
             list_changed,
+            subscribe: Some(true),
             template_list_changed: None,
         });
         self
@@ -290,11 +326,13 @@ impl McpServer {
         match &mut self.capabilities.resources {
             Some(cap) => {
                 cap.list_changed = true;
+                cap.subscribe = Some(true);
                 cap.template_list_changed = Some(true);
             }
             None => {
                 self.capabilities.resources = Some(ResourcesCapability {
                     list_changed: true,
+                    subscribe: Some(true),
                     template_list_changed: Some(true),
                 });
             }

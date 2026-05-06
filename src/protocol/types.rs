@@ -118,6 +118,7 @@ pub struct InitParams {
 pub struct InitResult {
     pub protocol_version: String,
     pub capabilities: ServerCapabilities,
+    pub instructions: Option<String>,
     pub server_info: Implementation,
 }
 
@@ -157,6 +158,10 @@ pub struct ToolsCapability {
     pub list_changed: Option<bool>,
 }
 
+/// Completion capability - indicates server supports argument autocompletion.
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct CompletionsCapability {}
+
 /// Prompts capability - indicates server supports prompt listing and getting.
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct PromptsCapability {
@@ -191,6 +196,8 @@ pub struct ServerCapabilities {
     pub sampling: Option<SamplingCapability>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tasks: Option<TasksCapability>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completions: Option<CompletionsCapability>,
 }
 
 impl ServerCapabilities {
@@ -208,6 +215,7 @@ impl ServerCapabilities {
     pub fn with_resources(mut self, list_changed: bool) -> Self {
         self.resources = Some(ResourcesCapability {
             list_changed,
+            subscribe: Some(true),
             template_list_changed: None,
         });
         self
@@ -218,11 +226,13 @@ impl ServerCapabilities {
         match &mut self.resources {
             Some(cap) => {
                 cap.list_changed = true;
+                cap.subscribe = Some(true);
                 cap.template_list_changed = Some(true);
             }
             None => {
                 self.resources = Some(ResourcesCapability {
                     list_changed: true,
+                    subscribe: Some(true),
                     template_list_changed: Some(true),
                 });
             }
@@ -267,6 +277,12 @@ impl ServerCapabilities {
         });
         self
     }
+
+    /// Enable completions capability (server supports argument autocompletion).
+    pub fn with_completions(mut self) -> Self {
+        self.completions = Some(CompletionsCapability::default());
+        self
+    }
 }
 
 /// Client-provided root directory.
@@ -301,6 +317,8 @@ impl Root {
 pub struct ResourcesCapability {
     #[serde(rename = "listChanged")]
     pub list_changed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subscribe: Option<bool>,
     #[serde(
         skip_serializing_if = "Option::is_none",
         rename = "templateListChanged"
@@ -1178,7 +1196,7 @@ fn default_strategy() -> AuthStrategy {
 // ===========================================================================
 
 /// Supported MCP protocol versions (in order of preference).
-pub const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &["2024-11-05", "2024-10-07"];
+pub const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &["2025-11-25", "2024-11-05", "2024-10-07"];
 
 /// Check if a version is compatible by comparing year prefix against supported versions.
 /// Accepts any version whose year matches a supported year or is within one year ahead

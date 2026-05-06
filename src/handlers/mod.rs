@@ -18,7 +18,7 @@ pub mod tools;
 pub use completion::handle_completion_complete;
 pub use elicitation::{handle_elicitation_complete, handle_elicitation_create};
 pub use init::handle_initialize;
-pub use logging::{handle_logging_messages, handle_logging_set_level};
+pub use logging::handle_logging_set_level;
 pub use notifications::{
     handle_notifications_cancelled, handle_notifications_progress, is_request_cancelled,
     send_progress,

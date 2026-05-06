@@ -67,6 +67,7 @@ pub async fn handle_initialize(
     let result = InitResult {
         protocol_version: negotiated_version,
         capabilities: server.capabilities.clone(),
+        instructions: None,
         server_info: Implementation {
             name: server.state.name.clone(),
             version: server.state.version.clone(),
