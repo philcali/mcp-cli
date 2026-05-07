@@ -333,25 +333,74 @@ pub struct Implementation {
     pub version: String,
 }
 
+/// Icon for tools, prompts, etc.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Icon {
+    pub uri: String,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "mimeType")]
+    pub mime_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<i64>,
+}
+
+/// Tool annotations for behavior hints.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolAnnotations {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub read_only_hint: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub destructive_hint: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub open_world_hint: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audience: Option<Vec<String>>,
+}
+
+/// Resource annotations.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResourceAnnotations {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audience: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub priority: Option<f64>,
+}
+
 // ===========================================================================
 // TOOLS
 // ===========================================================================
 
 /// Tool structure.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Tool {
     pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub input_schema: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub icons: Option<Vec<Icon>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub annotations: Option<ToolAnnotations>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_schema: Option<serde_json::Value>,
 }
 
 impl Tool {
     pub fn new(name: &str, description: &str) -> Self {
         Self {
             name: name.to_string(),
+            title: None,
             description: Some(description.to_string()),
             input_schema: Some(json!({ "type": "object" })),
+            icons: None,
+            annotations: None,
+            output_schema: None,
         }
     }
 
@@ -389,6 +438,8 @@ pub struct CallToolResult {
     pub content: Vec<Content>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub is_error: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub structured_content: Option<serde_json::Value>,
 }
 
 impl CallToolResult {
@@ -396,6 +447,7 @@ impl CallToolResult {
         Self {
             content: vec![Content::text(text)],
             is_error: Some(false),
+            structured_content: None,
         }
     }
 
@@ -403,6 +455,7 @@ impl CallToolResult {
         Self {
             content: vec![Content::text(text)],
             is_error: Some(true),
+            structured_content: None,
         }
     }
 }
@@ -418,6 +471,20 @@ pub enum Content {
     Image {
         data: String,
         mime_type: String,
+    },
+    #[serde(rename_all = "camelCase")]
+    Audio {
+        data: String,
+        mime_type: String,
+    },
+    #[serde(rename_all = "camelCase")]
+    ResourceLink {
+        uri: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+    },
+    EmbeddedResource {
+        resource: ResourceContents,
     },
 }
 
@@ -495,12 +562,16 @@ impl ReadResourceParams {
 pub struct ListToolsParams {
     #[serde(default)]
     pub tool_names: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
 }
 
 /// Tool list result.
 #[derive(Debug, Serialize)]
 pub struct ListToolsResult {
     pub tools: Vec<ToolListItem>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "nextCursor")]
+    pub next_cursor: Option<String>,
 }
 
 /// Tool list update notification.
@@ -533,16 +604,29 @@ impl ToolsListChangedNotification {
 pub struct ToolListItem {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub input_schema: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub icons: Option<Vec<Icon>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub annotations: Option<ToolAnnotations>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_schema: Option<serde_json::Value>,
 }
 
 impl From<Tool> for ToolListItem {
     fn from(tool: Tool) -> Self {
         Self {
             name: tool.name,
+            title: tool.title,
             description: tool.description,
             input_schema: tool.input_schema,
+            icons: tool.icons,
+            annotations: tool.annotations,
+            output_schema: tool.output_schema,
         }
     }
 }
@@ -560,9 +644,15 @@ pub struct Resource {
     pub resource_type: String,
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mime_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub annotations: Option<ResourceAnnotations>,
 }
 
 /// Resource template structure.
@@ -574,9 +664,13 @@ pub struct ResourceTemplate {
     pub resource_type: Option<String>,
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mime_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub annotations: Option<ResourceAnnotations>,
 }
 
 /// Resource content.
@@ -843,7 +937,11 @@ pub struct Prompt {
 pub struct PromptArgument {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub required: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enum_values: Option<Vec<String>>,
 }
 
 /// Prompt template file structure.
@@ -951,6 +1049,16 @@ pub enum PromptMessageContentItem {
     ImageUrl {
         image_url: ImageUrlData,
     },
+    #[serde(rename_all = "camelCase")]
+    Audio {
+        audio_url: AudioUrlData,
+    },
+}
+
+/// Audio URL data structure.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AudioUrlData {
+    pub url: String,
 }
 
 /// Image URL data structure.
@@ -1104,6 +1212,11 @@ pub enum SamplingContent {
         data: String,
         mime_type: String,
     },
+    #[serde(rename_all = "camelCase")]
+    Audio {
+        data: String,
+        mime_type: String,
+    },
 }
 
 /// A message for sampling.
@@ -1112,6 +1225,41 @@ pub struct SamplingMessage {
     pub role: MessageRole,
     #[serde(rename = "content")]
     pub content_value: SamplingContent,
+}
+
+/// Model hint for preferences.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ModelHint {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+/// Model preferences for sampling.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ModelPreferences {
+    #[serde(default)]
+    pub hints: Vec<ModelHint>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority: Option<f64>,
+}
+
+/// Tool choice for sampling.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ToolChoice {
+    Auto,
+    Required,
+    None,
+    Specific { tool_name: String },
+}
+
+/// Context inclusion for sampling.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum IncludeContext {
+    ThisWorkspace,
+    ThisServer,
+    OtherServers,
 }
 
 /// Parameters for createMessage sampling request.
@@ -1129,6 +1277,18 @@ pub struct CreateMessageParams {
     pub stop_sequences: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_preferences: Option<ModelPreferences>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<Tool>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_choice: Option<ToolChoice>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub include_context: Option<IncludeContext>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_prompted: Option<bool>,
 }
 
 /// Result of createMessage sampling.

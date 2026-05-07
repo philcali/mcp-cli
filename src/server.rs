@@ -1003,7 +1003,9 @@ mod tests {
         let server = McpServer::new("test-server", "1.0.0")
             .enable_prompts_dir(temp_dir.path().to_path_buf());
         let _result: serde_json::Value =
-            crate::handlers::handle_prompts_list(&server).await.unwrap();
+            crate::handlers::handle_prompts_list(&server, &serde_json::json!({}))
+                .await
+                .unwrap();
         assert!(
             server
                 .state

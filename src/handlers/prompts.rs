@@ -8,7 +8,15 @@ use anyhow::{Context, Result};
 use serde_json::json;
 
 /// List available prompts.
-pub async fn handle_prompts_list(server: &crate::server::McpServer) -> Result<serde_json::Value> {
+pub async fn handle_prompts_list(
+    server: &crate::server::McpServer,
+    params: &serde_json::Value,
+) -> Result<serde_json::Value> {
+    let cursor = params
+        .get("cursor")
+        .and_then(|c| c.as_str())
+        .map(|s| s.to_string());
+
     let mut cached = server.state.cached_prompts.lock().unwrap();
 
     if cached.is_empty() && server.state.prompts_dir.is_some() {
@@ -24,14 +32,25 @@ pub async fn handle_prompts_list(server: &crate::server::McpServer) -> Result<se
                 "arguments": p.arguments.as_ref().map(|args| {
                     args.iter().map(|a| json!({
                         "name": a.name,
+                        "description": a.description,
                         "required": a.required.unwrap_or(false),
+                        "enumValues": a.enum_values,
                     })).collect::<Vec<_>>()
                 }),
             })
         })
         .collect();
 
-    Ok(json!({ "prompts": prompt_list }))
+    let (sliced, next_cursor) = super::tools::paginate_list(
+        &prompt_list,
+        cursor.as_deref(),
+        super::tools::DEFAULT_PAGE_SIZE,
+    );
+
+    Ok(json!({
+        "prompts": sliced,
+        "nextCursor": next_cursor,
+    }))
 }
 
 /// Get prompt with provided arguments.

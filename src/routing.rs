@@ -11,7 +11,7 @@ pub async fn route_request(
 ) -> anyhow::Result<serde_json::Value> {
     match method {
         "initialize" => crate::handlers::handle_initialize(server, params).await,
-        "resources/list" => crate::handlers::handle_resources_list(server).await,
+        "resources/list" => crate::handlers::handle_resources_list(server, params).await,
         "resources/subscribe" => crate::handlers::handle_resources_subscribe(server, params).await,
         "resources/unsubscribe" => {
             crate::handlers::handle_resources_unsubscribe(server, params).await
@@ -34,10 +34,10 @@ pub async fn route_request(
         "logging/setLevel" => crate::handlers::handle_logging_set_level(server, params).await,
         "ping" => crate::handlers::handle_ping(server),
         "roots/list" => crate::handlers::handle_roots_list(server).await,
-        "tools/list" => crate::handlers::handle_tools_list(server).await,
+        "tools/list" => crate::handlers::handle_tools_list(server, params).await,
         "tools/call" => crate::handlers::handle_tools_call(server, params).await,
         "resources/read" => crate::handlers::handle_resources_read(server, params).await,
-        "prompts/list" => crate::handlers::handle_prompts_list(server).await,
+        "prompts/list" => crate::handlers::handle_prompts_list(server, params).await,
         "prompts/get" => crate::handlers::handle_prompts_get(server, params).await,
         "telemetry/event" => crate::handlers::handle_telemetry_event(server, params).await,
         "notifications/initialized" => Ok(json!({})),

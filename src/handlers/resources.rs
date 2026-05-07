@@ -7,7 +7,15 @@ use tokio::io::AsyncBufReadExt;
 use tracing::{debug, info};
 
 /// List available resources.
-pub async fn handle_resources_list(server: &crate::server::McpServer) -> Result<serde_json::Value> {
+pub async fn handle_resources_list(
+    server: &crate::server::McpServer,
+    params: &serde_json::Value,
+) -> Result<serde_json::Value> {
+    let cursor = params
+        .get("cursor")
+        .and_then(|c| c.as_str())
+        .map(|s| s.to_string());
+
     let mut cached = server.state.cached_resources.lock().unwrap();
 
     // Load resources from directory if not already cached and directory is configured
@@ -18,17 +26,28 @@ pub async fn handle_resources_list(server: &crate::server::McpServer) -> Result<
     let resource_list: Vec<_> = cached
         .iter()
         .map(|r| {
+            let size = std::fs::metadata(&r.file_path).ok().map(|m| m.len());
             json!({
                 "uri": r.uri,
                 "type": r.resource_type,
                 "name": r.name,
                 "description": r.description,
                 "mimeType": r.mime_type,
+                "size": size,
             })
         })
         .collect();
 
-    Ok(json!({ "resources": resource_list }))
+    let (sliced, next_cursor) = super::tools::paginate_list(
+        &resource_list,
+        cursor.as_deref(),
+        super::tools::DEFAULT_PAGE_SIZE,
+    );
+
+    Ok(json!({
+        "resources": sliced,
+        "nextCursor": next_cursor,
+    }))
 }
 
 /// Read resource contents by URI with streaming.
