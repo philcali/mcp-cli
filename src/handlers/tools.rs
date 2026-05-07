@@ -27,14 +27,20 @@ async fn find_tool(
 }
 
 /// List available tools.
-pub async fn handle_tools_list(server: &crate::server::McpServer) -> Result<serde_json::Value> {
+pub async fn handle_tools_list(
+    server: &crate::server::McpServer,
+    params: &serde_json::Value,
+) -> Result<serde_json::Value> {
+    let list_params: crate::protocol::ListToolsParams =
+        serde_json::from_value(params.clone()).unwrap_or_default();
+
     let mut cached = server.state.cached_tools.lock().unwrap();
 
     if cached.is_empty() && server.state.tools_dir.is_some() {
         *cached = server.load_tools()?;
     }
 
-    let tool_list: Vec<_> = cached
+    let mut tool_list: Vec<_> = cached
         .values()
         .map(|t| {
             let mut tool_obj = json!({
@@ -56,8 +62,45 @@ pub async fn handle_tools_list(server: &crate::server::McpServer) -> Result<serd
         })
         .collect();
 
-    Ok(json!({ "tools": tool_list }))
+    // Filter by tool_names if provided
+    if let Some(ref names) = list_params.tool_names {
+        tool_list.retain(|t| {
+            names
+                .iter()
+                .any(|n| t.get("name").and_then(|v| v.as_str()) == Some(n.as_str()))
+        });
+    }
+
+    // Apply pagination
+    let (sliced, next_cursor) =
+        paginate_list(&tool_list, list_params.cursor.as_deref(), DEFAULT_PAGE_SIZE);
+
+    Ok(json!({
+        "tools": sliced,
+        "nextCursor": next_cursor,
+    }))
 }
+
+/// Slice a list by cursor position and return next cursor if more items remain.
+pub fn paginate_list<'a, T>(
+    items: &'a [T],
+    cursor: Option<&str>,
+    page_size: usize,
+) -> (Vec<&'a T>, Option<String>) {
+    let start = cursor.and_then(|c| c.parse::<usize>().ok()).unwrap_or(0);
+
+    let end = (start + page_size).min(items.len());
+    let sliced = items[start..end].iter().collect();
+    let next_cursor = if end < items.len() {
+        Some(end.to_string())
+    } else {
+        None
+    };
+
+    (sliced, next_cursor)
+}
+
+pub const DEFAULT_PAGE_SIZE: usize = 100;
 
 /// Execute a tool with the given arguments.
 pub async fn handle_tools_call(
