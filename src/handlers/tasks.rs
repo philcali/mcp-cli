@@ -26,17 +26,25 @@ pub async fn handle_tasks_get(
     Ok(json!({ "task": task }))
 }
 
-/// Handle tasks/list - list all tasks.
+/// Handle tasks/list - list tasks with pagination.
 pub async fn handle_tasks_list(
     server: &crate::server::McpServer,
     params: &serde_json::Value,
 ) -> Result<serde_json::Value> {
     let list_params: ListTasksParams = serde_json::from_value(params.clone()).unwrap_or_default();
 
-    let tasks = server
+    let all_tasks = server
         .state
         .task_manager
         .list_tasks(list_params.states.clone());
+
+    let (paged, next_cursor) = crate::handlers::tools::paginate_list(
+        &all_tasks,
+        list_params.cursor.as_deref(),
+        crate::handlers::tools::DEFAULT_PAGE_SIZE,
+    );
+
+    let tasks: Vec<_> = paged.iter().map(|t| (*t).clone()).collect();
 
     info!(
         "tasks/list: returned {} tasks (filter={:?})",
@@ -45,6 +53,7 @@ pub async fn handle_tasks_list(
     );
     Ok(json!({
         "tasks": tasks,
+        "nextCursor": next_cursor,
     }))
 }
 

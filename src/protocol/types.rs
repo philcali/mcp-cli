@@ -197,6 +197,8 @@ pub struct ServerCapabilities {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tasks: Option<TasksCapability>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub elicitation: Option<ElicitationCapability>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub completions: Option<CompletionsCapability>,
 }
 
@@ -274,6 +276,15 @@ impl ServerCapabilities {
             requests: Some(TasksRequestsCapability {
                 tools: Some(TasksToolsRequestsCapability { call: Some(true) }),
             }),
+        });
+        self
+    }
+
+    /// Enable elicitation capability (server can request user input via client).
+    pub fn with_elicitation(mut self, form: bool, url: bool) -> Self {
+        self.elicitation = Some(ElicitationCapability {
+            form: Some(form),
+            url: Some(url),
         });
         self
     }
@@ -1620,7 +1631,7 @@ pub struct TaskResult {
 
 /// Elicitation capability declared by client.
 /// Supports form mode (structured data) and url mode (external interactions).
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ElicitationCapability {
     #[serde(default)]

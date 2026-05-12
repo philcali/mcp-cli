@@ -576,7 +576,7 @@ async fn handle_tools_call_as_task(
     let task_id_spawn = task_id.clone();
 
     // Spawn the tool process asynchronously
-    tokio::spawn(async move {
+    let handle = tokio::spawn(async move {
         let mut cmd = tokio::process::Command::new(&script_path);
         for (k, v) in &creds {
             cmd.env(k, v);
@@ -692,6 +692,9 @@ async fn handle_tools_call_as_task(
             }
         }
     });
+
+    // Store abort handle so cancel_task can kill the spawned process
+    server.state.task_manager.set_abort_handle(&task_id, handle);
 
     // Return immediately with the task
     let task = server

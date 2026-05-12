@@ -351,6 +351,14 @@ impl McpServer {
         self
     }
 
+    pub fn enable_elicitation(mut self) -> Self {
+        self.capabilities.elicitation = Some(crate::protocol::ElicitationCapability {
+            form: Some(true),
+            url: Some(true),
+        });
+        self
+    }
+
     pub fn enable_resource_templates_dir(mut self, path: PathBuf) -> Self {
         let mut new_state = (*self.state).clone();
         new_state.resource_templates_dir = Some(path);
@@ -565,6 +573,20 @@ impl McpServer {
             .set_status_changed_callback(callback);
     }
 
+    /// Start a background timer that periodically cleans up expired tasks.
+    pub fn start_task_cleanup_timer(&self) {
+        let task_manager = self.state.task_manager.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                let cleaned = task_manager.cleanup_expired();
+                if cleaned > 0 {
+                    debug!("Cleaned up {} expired tasks", cleaned);
+                }
+            }
+        });
+    }
+
     /// Start background task that sends notifications from the broadcast channel to stdout.
     fn start_notification_sender(
         notification_tx: std::sync::Arc<broadcast::Sender<String>>,
@@ -599,6 +621,9 @@ impl McpServer {
 
         // Wire up task status change notifications
         self.setup_task_status_notifications();
+
+        // Start periodic task cleanup timer
+        self.start_task_cleanup_timer();
 
         let stdin = tokio::io::stdin();
         let mut reader = BufReader::new(stdin).lines();
@@ -649,6 +674,9 @@ impl McpServer {
 
         // Wire up task status change notifications
         self.setup_task_status_notifications();
+
+        // Start periodic task cleanup timer
+        self.start_task_cleanup_timer();
 
         // Set up signal handlers for Unix platforms
         #[cfg(unix)]
@@ -835,6 +863,7 @@ pub struct ServerBuilder {
     enable_resource_templates: bool,
     resource_templates_dir: Option<std::path::PathBuf>,
     enable_tasks: bool,
+    enable_elicitation: bool,
 }
 
 impl ServerBuilder {
@@ -855,6 +884,7 @@ impl ServerBuilder {
             enable_resource_templates: false,
             resource_templates_dir: None,
             enable_tasks: false,
+            enable_elicitation: false,
         }
     }
     pub fn with_tools(mut self) -> Self {
@@ -902,6 +932,10 @@ impl ServerBuilder {
         self.enable_tasks = true;
         self
     }
+    pub fn with_elicitation(mut self) -> Self {
+        self.enable_elicitation = true;
+        self
+    }
     pub fn with_prompts_dir<P: Into<std::path::PathBuf>>(mut self, path: P) -> Self {
         self.prompts_dir = Some(path.into());
         self
@@ -944,6 +978,9 @@ impl ServerBuilder {
         }
         if self.enable_tasks {
             server = server.enable_tasks();
+        }
+        if self.enable_elicitation {
+            server = server.enable_elicitation();
         }
         server
     }

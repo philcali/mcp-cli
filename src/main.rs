@@ -35,6 +35,22 @@ struct Cli {
     #[arg(long)]
     with_logging: bool,
 
+    /// Enable sampling capability (server can ask client to call LLM)
+    #[arg(long)]
+    with_sampling: bool,
+
+    /// Enable tasks capability (task-augmented requests)
+    #[arg(long)]
+    with_tasks: bool,
+
+    /// Enable telemetry capability
+    #[arg(long)]
+    with_telemetry: bool,
+
+    /// Enable elicitation capability (request user input via client)
+    #[arg(long)]
+    with_elicitation: bool,
+
     /// Run as persistent stdio server (daemon mode)
     #[arg(long, short)]
     daemon: bool,
@@ -201,6 +217,26 @@ async fn main() -> Result<()> {
     if cli.with_logging {
         info!("Enabling logging capability");
         builder = builder.with_logging();
+    }
+
+    if cli.with_sampling {
+        info!("Enabling sampling capability");
+        builder = builder.with_sampling();
+    }
+
+    if cli.with_tasks {
+        info!("Enabling tasks capability");
+        builder = builder.with_tasks();
+    }
+
+    if cli.with_telemetry {
+        info!("Enabling telemetry capability");
+        builder = builder.with_telemetry();
+    }
+
+    if cli.with_elicitation {
+        info!("Enabling elicitation capability");
+        builder = builder.with_elicitation();
     }
 
     let srv = builder.build();

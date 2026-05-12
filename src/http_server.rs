@@ -31,6 +31,7 @@ struct AppState {
 pub async fn run_http(server: &McpServer, addr: SocketAddr) -> Result<()> {
     let server = server.clone();
     server.setup_task_status_notifications();
+    server.start_task_cleanup_timer();
     let state = AppState {
         server: Arc::new(server),
     };
