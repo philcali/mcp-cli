@@ -16,6 +16,9 @@ pub fn handle_ping(server: &crate::server::McpServer) -> anyhow::Result<serde_js
             "prompts": server.capabilities.prompts,
             "logging": server.capabilities.logging,
             "roots": server.capabilities.roots,
+            "sampling": server.capabilities.sampling,
+            "tasks": server.capabilities.tasks,
+            "elicitation": server.capabilities.elicitation,
         },
     }))
 }

@@ -17,6 +17,8 @@ struct TaskEntry {
     task: Task,
     result: Option<TaskResult>,
     waiter: Option<tokio::sync::oneshot::Sender<serde_json::Value>>,
+    /// Handle to abort the spawned task work (if still running).
+    abort_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 /// In-memory manager for task lifecycle.
@@ -102,6 +104,7 @@ impl TaskManager {
             task,
             result: None,
             waiter: None,
+            abort_handle: None,
         };
         self.tasks.lock().unwrap().insert(id.clone(), entry);
         debug!("Created task {} for method {}", id, method);
@@ -183,12 +186,19 @@ impl TaskManager {
         }
     }
 
+    /// Store the abort handle for a spawned task.
+    pub fn set_abort_handle(&self, task_id: &str, handle: tokio::task::JoinHandle<()>) {
+        if let Some(entry) = self.tasks.lock().unwrap().get_mut(task_id) {
+            entry.abort_handle = Some(handle);
+        }
+    }
+
     /// Cancel a task. Returns true if the task was successfully cancelled.
     pub fn cancel_task(&self, task_id: &str) -> bool {
-        let task = {
+        let result = {
             let mut tasks = self.tasks.lock().unwrap();
             if let Some(entry) = tasks.get_mut(task_id)
-                && entry.task.state == TaskState::Working
+                && !entry.task.state.is_terminal()
             {
                 entry.task.state = TaskState::Cancelled;
                 entry.task.status_message = Some("Task cancelled by request".to_string());
@@ -196,12 +206,17 @@ impl TaskManager {
                 if let Some(tx) = entry.waiter.take() {
                     let _ = tx.send(json!({ "cancelled": true }));
                 }
-                Some(entry.task.clone())
+                let handle = entry.abort_handle.take();
+                Some((entry.task.clone(), handle))
             } else {
                 None
             }
         };
-        if let Some(t) = task {
+        if let Some((t, handle)) = result {
+            // Abort the spawned work if it's still running
+            if let Some(h) = handle {
+                h.abort();
+            }
             self.notify_status_changed(&t);
             debug!("Task {} cancelled", task_id);
             true
