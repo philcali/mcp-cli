@@ -76,6 +76,9 @@ pub struct McpServer {
     /// Maps elicitation_id → request_id for URL-mode elicitations.
     /// Resolved by the elicitation/complete notification handler.
     pub(crate) elicitation_map: std::sync::Arc<tokio::sync::Mutex<HashMap<String, String>>>,
+    /// Handles for file system watcher tasks — used for graceful shutdown.
+    pub(crate) watcher_handles:
+        std::sync::Arc<std::sync::Mutex<Vec<std::sync::Arc<tokio::task::JoinHandle<()>>>>>,
 }
 
 impl Clone for McpServer {
@@ -89,6 +92,7 @@ impl Clone for McpServer {
             pending_sampling: self.pending_sampling.clone(),
             pending_requests: Arc::clone(&self.pending_requests),
             elicitation_map: Arc::clone(&self.elicitation_map),
+            watcher_handles: std::sync::Arc::clone(&self.watcher_handles),
         }
     }
 }
@@ -118,6 +122,7 @@ impl McpServer {
             pending_sampling: None,
             pending_requests: std::sync::Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             elicitation_map: std::sync::Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            watcher_handles: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
         }
     }
 
@@ -249,7 +254,7 @@ impl McpServer {
         };
         let state_clone = self.state.clone();
         let notification_tx = self.notification_tx.clone();
-        crate::watcher::ToolWatcher::start_watching(
+        let handle = crate::watcher::ToolWatcher::start_watching(
             dir,
             WatchConfig {
                 watch_for_changes: true,
@@ -266,12 +271,14 @@ impl McpServer {
                     let _ = tx.send(msg.to_string());
                 }
             }),
-        )
+        )?;
+        self.register_watcher_handle(handle.clone());
+        Ok(handle)
     }
 
-    pub fn load_tools(&self) -> Result<std::collections::HashMap<String, ToolDefinition>> {
+    pub async fn load_tools(&self) -> Result<std::collections::HashMap<String, ToolDefinition>> {
         match &self.state.tools_dir {
-            Some(dir) => crate::discovery::tools::discover_tools(dir),
+            Some(dir) => crate::discovery::tools::discover_tools(dir).await,
             None => Ok(std::collections::HashMap::new()),
         }
     }
@@ -385,7 +392,7 @@ impl McpServer {
         };
         let state_clone = self.state.clone();
         let notification_tx = self.notification_tx.clone();
-        crate::watcher::ResourceTemplateWatcher::start_watching(
+        let handle = crate::watcher::ResourceTemplateWatcher::start_watching(
             dir,
             WatchConfig {
                 watch_for_changes: true,
@@ -406,7 +413,9 @@ impl McpServer {
                     let _ = tx.send(msg.to_string());
                 }
             }),
-        )
+        )?;
+        self.register_watcher_handle(handle.clone());
+        Ok(handle)
     }
 
     pub fn enable_prompts_dir(mut self, path: PathBuf) -> Self {
@@ -463,11 +472,13 @@ impl McpServer {
         };
         if !self.prompt_cache_config.watch_for_changes {
             warn!("Prompt file watching is disabled");
-            return Ok(std::sync::Arc::new(tokio::task::spawn(async {})));
+            let handle = std::sync::Arc::new(tokio::task::spawn(async {}));
+            self.register_watcher_handle(handle.clone());
+            return Ok(handle);
         }
         let state_clone = self.state.clone();
         let notification_tx = self.notification_tx.clone();
-        crate::watcher::PromptWatcher::start_watching(
+        let handle = crate::watcher::PromptWatcher::start_watching(
             dir,
             WatchConfig {
                 watch_for_changes: true,
@@ -484,7 +495,9 @@ impl McpServer {
                     let _ = tx.send(msg.to_string());
                 }
             }),
-        )
+        )?;
+        self.register_watcher_handle(handle.clone());
+        Ok(handle)
     }
 
     pub fn start_resource_watcher(&self) -> Result<std::sync::Arc<tokio::task::JoinHandle<()>>> {
@@ -494,7 +507,7 @@ impl McpServer {
         };
         let state_clone = self.state.clone();
         let notification_tx = self.notification_tx.clone();
-        crate::watcher::ResourceWatcher::start_watching(
+        let handle = crate::watcher::ResourceWatcher::start_watching(
             dir.clone(),
             WatchConfig {
                 watch_for_changes: true,
@@ -550,7 +563,9 @@ impl McpServer {
                     }
                 }
             }),
-        )
+        )?;
+        self.register_watcher_handle(handle.clone());
+        Ok(handle)
     }
 
     /// Set up task status change notification callback on the task manager.
@@ -585,6 +600,19 @@ impl McpServer {
                 }
             }
         });
+    }
+
+    /// Abort all file system watcher tasks for graceful shutdown.
+    pub fn shutdown_watchers(&self) {
+        let mut handles = self.watcher_handles.lock().unwrap();
+        for handle in handles.drain(..) {
+            handle.abort();
+        }
+    }
+
+    /// Register a watcher task handle so it can be aborted on shutdown.
+    fn register_watcher_handle(&self, handle: std::sync::Arc<tokio::task::JoinHandle<()>>) {
+        self.watcher_handles.lock().unwrap().push(handle);
     }
 
     /// Start background task that sends notifications from the broadcast channel to stdout.
@@ -638,15 +666,8 @@ impl McpServer {
                         continue;
                     }
                     debug!("Received message: {}", line);
-                    match self.process_message(&line, &stdout).await {
-                        Ok(is_init) => {
-                            if !self.state.is_initialized() && is_init {
-                                self.state.set_initialized();
-                            }
-                        }
-                        Err(e) => {
-                            error!("Error processing message: {}", e);
-                        }
+                    if let Err(e) = self.process_message(&line, &stdout).await {
+                        error!("Error processing message: {}", e);
                     }
                 }
                 Ok(None) => {
@@ -717,20 +738,15 @@ impl McpServer {
         &self,
         line: &str,
         stdout: &std::sync::Arc<tokio::sync::Mutex<tokio::io::Stdout>>,
-    ) -> Result<bool> {
+    ) -> Result<()> {
         // Check if this is a response to a pending sampling request
         if let Ok(response) = serde_json::from_str::<serde_json::Value>(line)
             && let Some(id) = response.get("id").and_then(|v| v.as_str())
             && self.resolve_pending_request(id, response.clone()).await
         {
             info!("Received sampling response from client");
-            return Ok(false);
+            return Ok(());
         }
-
-        let is_initialize = serde_json::from_str::<serde_json::Value>(line)
-            .ok()
-            .map(|v| v.get("method").and_then(|m| m.as_str()) == Some("initialize"))
-            .unwrap_or(false);
 
         match self.handle_request(line, self.state.is_initialized()).await {
             Ok(response) => {
@@ -757,7 +773,7 @@ impl McpServer {
                     .await;
             }
         }
-        Ok(is_initialize)
+        Ok(())
     }
 
     /// Internal stdin loop - processes lines until EOF, then returns.

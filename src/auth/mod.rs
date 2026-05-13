@@ -1,7 +1,6 @@
 //! Authentication configuration and credential resolution.
 
-use crate::protocol::AuthStrategy;
-use crate::protocol::ToolAuthConfig;
+use crate::protocol::{AuthStrategy, ToolAuthConfig, load_tool_auth_config};
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use tracing::debug;
@@ -79,14 +78,6 @@ fn validate_and_inject(config: &ToolAuthConfig) -> Result<HashMap<String, String
         config.strategy
     );
     Ok(creds)
-}
-
-pub fn load_tool_auth_config(path: &std::path::Path) -> Result<Option<ToolAuthConfig>> {
-    let content = std::fs::read_to_string(path)?;
-    let config: ToolAuthConfig = serde_json::from_str(&content)
-        .with_context(|| format!("Failed to parse auth config from {:?}", path))?;
-
-    Ok(Some(config))
 }
 
 fn load_auth_config(

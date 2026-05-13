@@ -5,7 +5,6 @@ use anyhow::Result;
 use serde_json::json;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use tracing::{debug, info, warn};
 
 /// Default input schema used when a tool doesn't support --describe.
@@ -25,8 +24,14 @@ pub struct ToolDefinition {
 
 /// Probe a tool with --describe and parse the JSON response.
 /// Returns (name, description, input_schema, task_support) or falls back to defaults.
-fn describe_tool(path: &Path) -> (String, String, serde_json::Value, Option<TaskSupportLevel>) {
-    let output = match Command::new(path).arg("--describe").output() {
+async fn describe_tool(
+    path: &Path,
+) -> (String, String, serde_json::Value, Option<TaskSupportLevel>) {
+    let output = match tokio::process::Command::new(path)
+        .arg("--describe")
+        .output()
+        .await
+    {
         Ok(o) => o,
         Err(e) => {
             debug!("Failed to spawn {:?} --describe: {}", path, e);
@@ -103,7 +108,7 @@ fn tool_defaults(path: &Path) -> (String, String, serde_json::Value, Option<Task
 }
 
 /// Discover tools from a directory.
-pub fn discover_tools(tools_dir: &Path) -> Result<HashMap<String, ToolDefinition>> {
+pub async fn discover_tools(tools_dir: &Path) -> Result<HashMap<String, ToolDefinition>> {
     if !tools_dir.exists() {
         warn!("Tools directory does not exist: {:?}", tools_dir);
         return Ok(HashMap::new());
@@ -111,7 +116,15 @@ pub fn discover_tools(tools_dir: &Path) -> Result<HashMap<String, ToolDefinition
 
     let mut tools = HashMap::new();
 
-    for entry in std::fs::read_dir(tools_dir)? {
+    let entries = match std::fs::read_dir(tools_dir) {
+        Ok(e) => e,
+        Err(e) => {
+            warn!("Failed to read tools directory: {}", e);
+            return Ok(HashMap::new());
+        }
+    };
+
+    for entry in entries {
         let entry = entry?;
         let path = entry.path();
 
@@ -146,7 +159,7 @@ pub fn discover_tools(tools_dir: &Path) -> Result<HashMap<String, ToolDefinition
             }
         }
 
-        let (name, description, input_schema, task_support) = describe_tool(&path);
+        let (name, description, input_schema, task_support) = describe_tool(&path).await;
 
         let auth_config = match load_tool_auth_config(&path.with_extension("")) {
             Ok(Some(cfg)) => Some(cfg),
