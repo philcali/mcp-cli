@@ -20,28 +20,29 @@ pub struct ServerState {
     pub tools_dir: Option<PathBuf>,
     pub cached_tools: Arc<Mutex<HashMap<String, ToolDefinition>>>,
     pub resources_dir: Option<PathBuf>,
-    pub cached_resources: Mutex<Vec<ResourceEntry>>,
+    pub cached_resources: Arc<Mutex<Vec<ResourceEntry>>>,
     pub prompts_dir: Option<PathBuf>,
     pub cached_prompts: Arc<Mutex<HashMap<String, PromptEntry>>>,
-    pub roots: Mutex<Vec<crate::protocol::Root>>,
+    pub roots: Arc<Mutex<Vec<crate::protocol::Root>>>,
     pub subscription_manager: Arc<dyn ResourceManager + Send + Sync>,
     /// Whether the server has been successfully initialized
     pub initialized: AtomicBool,
     /// OAuth2 token cache shared across all requests
     pub oauth_cache: TokenCache,
     /// Client's capabilities from the initialize request (interior-mutable for HTTP transport)
-    pub client_capabilities: Mutex<Option<ClientCapabilities>>,
+    pub client_capabilities: Arc<Mutex<Option<ClientCapabilities>>>,
     /// Resource templates directory
     pub resource_templates_dir: Option<PathBuf>,
     /// Cached resource templates
-    pub cached_resource_templates: Mutex<Vec<crate::discovery::resources::ResourceTemplateEntry>>,
+    pub cached_resource_templates:
+        Arc<Mutex<Vec<crate::discovery::resources::ResourceTemplateEntry>>>,
     /// Task manager for task-augmented requests
     pub task_manager: std::sync::Arc<crate::task_manager::TaskManager>,
     /// Current minimum log level for logging/messages (set by client via logging/setLevel)
     pub log_level: std::sync::Arc<std::sync::RwLock<LogLevel>>,
     /// Set of request IDs that have been cancelled via notifications/cancelled.
     /// Handlers can check this to detect cancellation.
-    pub cancelled_requests: Mutex<HashMap<serde_json::Value, String>>,
+    pub cancelled_requests: Arc<Mutex<HashMap<serde_json::Value, String>>>,
 }
 
 impl Clone for ServerState {
@@ -52,21 +53,19 @@ impl Clone for ServerState {
             tools_dir: self.tools_dir.clone(),
             cached_tools: Arc::clone(&self.cached_tools),
             resources_dir: self.resources_dir.clone(),
-            cached_resources: Mutex::new(self.cached_resources.lock().unwrap().clone()),
+            cached_resources: Arc::clone(&self.cached_resources),
             prompts_dir: self.prompts_dir.clone(),
             cached_prompts: Arc::clone(&self.cached_prompts),
-            roots: Mutex::new(self.roots.lock().unwrap().clone()),
+            roots: Arc::clone(&self.roots),
             subscription_manager: Arc::clone(&self.subscription_manager),
             initialized: AtomicBool::new(self.initialized.load(Ordering::SeqCst)),
             oauth_cache: self.oauth_cache.clone(),
-            client_capabilities: Mutex::new(self.client_capabilities.lock().unwrap().clone()),
+            client_capabilities: Arc::clone(&self.client_capabilities),
             resource_templates_dir: self.resource_templates_dir.clone(),
-            cached_resource_templates: Mutex::new(
-                self.cached_resource_templates.lock().unwrap().clone(),
-            ),
+            cached_resource_templates: Arc::clone(&self.cached_resource_templates),
             task_manager: Arc::clone(&self.task_manager),
             log_level: Arc::clone(&self.log_level),
-            cancelled_requests: Mutex::new(self.cancelled_requests.lock().unwrap().clone()),
+            cancelled_requests: Arc::clone(&self.cancelled_requests),
         }
     }
 }
@@ -82,19 +81,19 @@ impl ServerState {
             tools_dir: None,
             cached_tools: Arc::new(Mutex::new(HashMap::new())),
             resources_dir: None,
-            cached_resources: Mutex::new(Vec::new()),
+            cached_resources: Arc::new(Mutex::new(Vec::new())),
             prompts_dir: None,
             cached_prompts: Arc::new(Mutex::new(HashMap::new())),
-            roots: Mutex::new(Vec::new()),
+            roots: Arc::new(Mutex::new(Vec::new())),
             subscription_manager,
             initialized: AtomicBool::new(false),
             oauth_cache: TokenCache::new(),
-            client_capabilities: Mutex::new(None),
+            client_capabilities: Arc::new(Mutex::new(None)),
             resource_templates_dir: None,
-            cached_resource_templates: Mutex::new(Vec::new()),
+            cached_resource_templates: Arc::new(Mutex::new(Vec::new())),
             task_manager: Arc::new(crate::task_manager::TaskManager::new()),
             log_level: Arc::new(std::sync::RwLock::new(LogLevel::Debug)),
-            cancelled_requests: Mutex::new(HashMap::new()),
+            cancelled_requests: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -134,12 +133,12 @@ impl ServerState {
         self
     }
 
-    pub fn load_tools(&self) -> Result<HashMap<String, ToolDefinition>, anyhow::Error> {
+    pub async fn load_tools(&self) -> Result<HashMap<String, ToolDefinition>, anyhow::Error> {
         let dir = match &self.tools_dir {
             Some(p) => p,
             None => return Ok(HashMap::new()),
         };
-        discover_tools(dir)
+        discover_tools(dir).await
     }
 
     pub fn load_resources(&self) -> Result<Vec<ResourceEntry>, anyhow::Error> {

@@ -13,13 +13,20 @@ async fn find_tool(
     server: &crate::server::McpServer,
     name: &str,
 ) -> Result<(std::path::PathBuf, Option<ToolAuthConfig>)> {
-    let cached = server.state.cached_tools.lock().unwrap();
-    if let Some(tool) = cached.get(name) {
-        return Ok((tool.script_path.clone(), tool.auth_config.clone()));
+    let found = {
+        let cached = server.state.cached_tools.lock().unwrap();
+        cached
+            .get(name)
+            .map(|t| (t.script_path.clone(), t.auth_config.clone()))
+    };
+
+    if let Some(tool) = found {
+        return Ok(tool);
     }
-    drop(cached);
+
+    let tools = server.load_tools().await?;
     let mut cached = server.state.cached_tools.lock().unwrap();
-    *cached = server.load_tools()?;
+    *cached = tools;
     match cached.get(name) {
         Some(tool) => Ok((tool.script_path.clone(), tool.auth_config.clone())),
         None => Err(anyhow::anyhow!("Tool '{}' not found", name)),
@@ -34,11 +41,18 @@ pub async fn handle_tools_list(
     let list_params: crate::protocol::ListToolsParams =
         serde_json::from_value(params.clone()).unwrap_or_default();
 
-    let mut cached = server.state.cached_tools.lock().unwrap();
+    let need_load = {
+        let cached = server.state.cached_tools.lock().unwrap();
+        cached.is_empty() && server.state.tools_dir.is_some()
+    };
 
-    if cached.is_empty() && server.state.tools_dir.is_some() {
-        *cached = server.load_tools()?;
+    if need_load {
+        let tools = server.load_tools().await?;
+        let mut cached = server.state.cached_tools.lock().unwrap();
+        *cached = tools;
     }
+
+    let cached = server.state.cached_tools.lock().unwrap();
 
     let mut tool_list: Vec<_> = cached
         .values()
@@ -247,19 +261,20 @@ pub async fn handle_tools_call(
                 ));
             }
         }
-        Ok(Err(_)) => {
+        Ok(Err(e)) => {
             let _ = child.kill().await;
             return Err(anyhow::anyhow!(
-                "Tool '{}' timed out after {} seconds",
+                "Tool '{}' process error: {}",
                 call_params.name,
-                TOOL_TIMEOUT_SECS
+                e
             ));
         }
         Err(_) => {
             let _ = child.kill().await;
             return Err(anyhow::anyhow!(
-                "Failed to wait for tool '{}' to complete",
-                call_params.name
+                "Tool '{}' timed out after {} seconds",
+                call_params.name,
+                TOOL_TIMEOUT_SECS
             ));
         }
     }
@@ -413,7 +428,6 @@ pub(crate) async fn handle_tools_call_streaming(
     });
 
     // Wait for tool to complete with timeout
-    const TOOL_TIMEOUT_SECS: u64 = 30;
     let wait_result = tokio::time::timeout(
         std::time::Duration::from_secs(TOOL_TIMEOUT_SECS),
         child.wait(),
@@ -469,7 +483,31 @@ pub(crate) async fn handle_tools_call_streaming(
                 "stream_id": stream_id
             }))
         }
-        Ok(Err(_)) => {
+        Ok(Err(e)) => {
+            let _ = child.kill().await;
+
+            // Send error notification
+            if let Some(ref tx) = notification_tx {
+                let _ = tx.send(
+                    json!({
+                        "jsonrpc": "2.0",
+                        "method": "tools/stream",
+                        "params": {
+                            "request_id": stream_id,
+                            "chunk": {"type": "done", "summary": format!("Process error: {}", e)}
+                        }
+                    })
+                    .to_string(),
+                );
+            }
+
+            Err(anyhow::anyhow!(
+                "Tool '{}' process error: {}",
+                call_params.name,
+                e
+            ))
+        }
+        Err(_) => {
             let _ = child.kill().await;
 
             // Send error notification
@@ -488,26 +526,6 @@ pub(crate) async fn handle_tools_call_streaming(
                 "Tool '{}' timed out after {} seconds",
                 call_params.name,
                 TOOL_TIMEOUT_SECS
-            ))
-        }
-        Err(_) => {
-            let _ = child.kill().await;
-
-            // Send error notification
-            if let Some(ref tx) = notification_tx {
-                let _ = tx.send(json!({
-                    "jsonrpc": "2.0",
-                    "method": "tools/stream",
-                    "params": {
-                        "request_id": stream_id,
-                        "chunk": {"type": "done", "summary": "Failed to wait for tool completion"}
-                    }
-                }).to_string());
-            }
-
-            Err(anyhow::anyhow!(
-                "Failed to wait for tool '{}' to complete",
-                call_params.name
             ))
         }
     }
@@ -607,8 +625,28 @@ async fn handle_tools_call_as_task(
 
         // Read stdout/stderr concurrently
         let (stdout_result, stderr_output) = {
-            let mut stdout = child.stdout.take().expect("stdout should be available");
-            let mut stderr = child.stderr.take().expect("stderr should be available");
+            let mut stdout = match child.stdout.take() {
+                Some(s) => s,
+                None => {
+                    task_manager.fail_task(
+                        &task_id_spawn,
+                        json!({ "error": "Tool stdout not available" }),
+                    );
+                    let _ = child.kill().await;
+                    return;
+                }
+            };
+            let mut stderr = match child.stderr.take() {
+                Some(s) => s,
+                None => {
+                    task_manager.fail_task(
+                        &task_id_spawn,
+                        json!({ "error": "Tool stderr not available" }),
+                    );
+                    let _ = child.kill().await;
+                    return;
+                }
+            };
 
             let (stdout_res, stderr_res) = tokio::join!(
                 async {

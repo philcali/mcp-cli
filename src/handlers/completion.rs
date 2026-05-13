@@ -36,12 +36,18 @@ async fn handle_tool_completion(
         }));
     }
 
-    let mut cached = server.state.cached_tools.lock().unwrap();
+    let need_load = {
+        let cached = server.state.cached_tools.lock().unwrap();
+        cached.is_empty() && server.state.tools_dir.is_some()
+    };
 
-    if cached.is_empty() && server.state.tools_dir.is_some() {
-        *cached = server.load_tools()?;
+    if need_load {
+        let tools = server.load_tools().await?;
+        let mut cached = server.state.cached_tools.lock().unwrap();
+        *cached = tools;
     }
 
+    let cached = server.state.cached_tools.lock().unwrap();
     let prefix = params.argument.value.to_lowercase();
     let values: Vec<String> = cached
         .keys()

@@ -244,70 +244,59 @@ async fn main() -> Result<()> {
     // Start watchers if directories are configured
     if tools_dir.is_some() {
         match srv.start_tool_watcher() {
-            Ok(handle) => {
-                info!("Started tool watcher");
-                std::mem::forget(handle);
-            }
+            Ok(_) => info!("Started tool watcher"),
             Err(e) => warn!("Failed to start tool watcher: {}", e),
         }
     }
 
     if prompts_dir.is_some() {
         match srv.start_prompt_watcher() {
-            Ok(handle) => {
-                info!("Started prompt watcher");
-                std::mem::forget(handle);
-            }
+            Ok(_) => info!("Started prompt watcher"),
             Err(e) => warn!("Failed to start prompt watcher: {}", e),
         }
     }
 
     if resources_dir.is_some() {
         match srv.start_resource_watcher() {
-            Ok(handle) => {
-                info!("Started resource watcher");
-                std::mem::forget(handle);
-            }
+            Ok(_) => info!("Started resource watcher"),
             Err(e) => warn!("Failed to start resource watcher: {}", e),
         }
     }
 
     if resource_templates_dir.is_some() {
         match srv.start_resource_templates_watcher() {
-            Ok(handle) => {
-                info!("Started resource templates watcher");
-                std::mem::forget(handle);
-            }
+            Ok(_) => info!("Started resource templates watcher"),
             Err(e) => warn!("Failed to start resource templates watcher: {}", e),
         }
     }
 
     info!("MCP server starting...");
 
-    #[cfg(feature = "http")]
-    if cli.http {
-        let addr: std::net::SocketAddr = cli
-            .http_addr
-            .as_deref()
-            .unwrap_or("127.0.0.1:3000")
-            .parse()
-            .expect("Invalid HTTP address");
-        info!("Running in HTTP mode on {}", addr);
-        srv.run_http(addr).await?;
-    } else if cli.daemon {
-        info!("Running in daemon mode (persistent server)");
-        srv.run_daemon().await?;
-    } else {
-        srv.run().await?;
-    }
+    let result = async {
+        #[cfg(feature = "http")]
+        if cli.http {
+            let addr: std::net::SocketAddr = cli
+                .http_addr
+                .as_deref()
+                .unwrap_or("127.0.0.1:3000")
+                .parse()
+                .expect("Invalid HTTP address");
+            info!("Running in HTTP mode on {}", addr);
+            return srv.run_http(addr).await;
+        }
 
-    #[cfg(not(feature = "http"))]
-    if cli.daemon {
-        info!("Running in daemon mode (persistent server)");
-        srv.run_daemon().await?;
-    } else {
-        srv.run().await?;
-    }
+        #[cfg(not(feature = "http"))]
+        if cli.daemon {
+            info!("Running in daemon mode (persistent server)");
+            return srv.run_daemon().await;
+        }
 
-    Ok(())
+        srv.run().await
+    }
+    .await;
+
+    // Gracefully shut down all file system watchers
+    srv.shutdown_watchers();
+
+    result
 }
