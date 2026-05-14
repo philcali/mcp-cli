@@ -183,12 +183,6 @@ pub struct ToolWatcher;
 
 impl Default for ToolWatcher {
     fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl ToolWatcher {
-    pub fn new() -> Self {
         Self
     }
 }
@@ -205,7 +199,7 @@ impl FileSystemWatcher for ToolWatcher {
             return Ok(std::sync::Arc::new(tokio::task::spawn(async {})));
         }
 
-        let watcher = ToolWatcher::new();
+        let watcher = ToolWatcher;
         let watch_config = config.clone();
 
         let handle = tokio::task::spawn(async move {
@@ -238,15 +232,11 @@ pub struct ResourceWatcher;
 
 impl Default for ResourceWatcher {
     fn default() -> Self {
-        Self::new()
+        Self
     }
 }
 
 impl ResourceWatcher {
-    pub fn new() -> Self {
-        Self
-    }
-
     pub fn start_watching(
         dir: PathBuf,
         config: WatchConfig,
@@ -285,92 +275,6 @@ impl ResourceWatcher {
             }
         })
         .await;
-    }
-}
-
-/// Unified event manager that coordinates all watchers.
-pub struct EventManager {
-    prompt_handle: Option<std::sync::Arc<tokio::task::JoinHandle<()>>>,
-    tool_handle: Option<std::sync::Arc<tokio::task::JoinHandle<()>>>,
-    resource_handle: Option<std::sync::Arc<tokio::task::JoinHandle<()>>>,
-}
-
-impl EventManager {
-    pub fn new() -> Self {
-        Self {
-            prompt_handle: None,
-            tool_handle: None,
-            resource_handle: None,
-        }
-    }
-
-    /// Start watching prompts directory.
-    pub fn start_prompt_watching(
-        &mut self,
-        dir: PathBuf,
-        config: WatchConfig,
-        on_change: CacheInvalidateCallback,
-        on_list_changed: ListChangedCallback,
-    ) -> Result<()> {
-        if self.prompt_handle.is_some() {
-            warn!("Prompt watcher already started");
-            return Ok(());
-        }
-
-        let handle = PromptWatcher::start_watching(dir, config, on_change, on_list_changed)?;
-        self.prompt_handle = Some(handle);
-        Ok(())
-    }
-
-    /// Start watching tools directory.
-    pub fn start_tool_watching(
-        &mut self,
-        dir: PathBuf,
-        config: WatchConfig,
-        on_change: CacheInvalidateCallback,
-        on_list_changed: ListChangedCallback,
-    ) -> Result<()> {
-        if self.tool_handle.is_some() {
-            warn!("Tool watcher already started");
-            return Ok(());
-        }
-
-        let handle = ToolWatcher::start_watching(dir, config, on_change, on_list_changed)?;
-        self.tool_handle = Some(handle);
-        Ok(())
-    }
-
-    /// Start watching resources directory.
-    pub fn start_resource_watching(
-        &mut self,
-        dir: PathBuf,
-        config: WatchConfig,
-        on_change: CacheInvalidateCallback,
-        on_list_changed: ListChangedCallback,
-        on_updated: ResourceUpdatedCallback,
-    ) -> Result<()> {
-        if self.resource_handle.is_some() {
-            warn!("Resource watcher already started");
-            return Ok(());
-        }
-
-        let handle =
-            ResourceWatcher::start_watching(dir, config, on_change, on_list_changed, on_updated)?;
-        self.resource_handle = Some(handle);
-        Ok(())
-    }
-
-    /// Stop all watchers.
-    pub fn stop_all(&mut self) {
-        self.prompt_handle = None;
-        self.tool_handle = None;
-        self.resource_handle = None;
-    }
-}
-
-impl Default for EventManager {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
