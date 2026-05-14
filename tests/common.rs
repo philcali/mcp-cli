@@ -178,6 +178,9 @@ pub fn run_request_sequence_daemon(
         }
     }
 
+    // Give the daemon time to process requests and write responses
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
     #[cfg(unix)]
     unsafe {
         libc::kill(child.id() as i32, SIGTERM);

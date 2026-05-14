@@ -228,14 +228,14 @@ impl McpServer {
         self.state.add_root(uri, name);
     }
 
-    pub fn enable_tools(mut self) -> Self {
+    pub fn with_tools(mut self) -> Self {
         self.capabilities.tools = Some(ToolsCapability {
             list_changed: Some(true),
         });
         self
     }
 
-    pub fn enable_tools_dir(mut self, path: PathBuf) -> Self {
+    pub fn with_tools_dir(mut self, path: PathBuf) -> Self {
         let tools_dir_exists = std::path::Path::new(&path).exists();
         // Clone the content to get a mutable copy
         let mut new_state = (*self.state).clone();
@@ -287,7 +287,7 @@ impl McpServer {
         self.state.load_resources()
     }
 
-    pub fn enable_resources_dir(mut self, path: PathBuf) -> Self {
+    pub fn with_resources_dir(mut self, path: PathBuf) -> Self {
         // Clone the content to get a mutable copy
         let mut new_state = (*self.state).clone();
         new_state.resources_dir = Some(path);
@@ -295,7 +295,7 @@ impl McpServer {
         self
     }
 
-    pub fn enable_resources(mut self, list_changed: bool) -> Self {
+    pub fn with_resources(mut self, list_changed: bool) -> Self {
         self.capabilities.resources = Some(ResourcesCapability {
             list_changed,
             subscribe: Some(true),
@@ -304,19 +304,19 @@ impl McpServer {
         self
     }
 
-    pub fn enable_prompts(mut self) -> Self {
+    pub fn with_prompts(mut self) -> Self {
         self.capabilities.prompts = Some(PromptsCapability {
             list_changed: Some(true),
         });
         self
     }
 
-    pub fn enable_logging(mut self) -> Self {
+    pub fn with_logging(mut self) -> Self {
         self.capabilities.logging = Some(true);
         self
     }
 
-    pub fn enable_telemetry(mut self) -> Self {
+    pub fn with_telemetry(mut self) -> Self {
         // Add telemetry capability to experimental features
         let mut experimental = self.capabilities.experimental.clone().unwrap_or_default();
         experimental.insert("telemetry".to_string(), json!(true));
@@ -324,12 +324,12 @@ impl McpServer {
         self
     }
 
-    pub fn enable_sampling(mut self) -> Self {
+    pub fn with_sampling(mut self) -> Self {
         self.capabilities.sampling = Some(SamplingCapability { list_changed: None });
         self
     }
 
-    pub fn enable_resource_templates(mut self) -> Self {
+    pub fn with_resource_templates(mut self) -> Self {
         match &mut self.capabilities.resources {
             Some(cap) => {
                 cap.list_changed = true;
@@ -347,7 +347,7 @@ impl McpServer {
         self
     }
 
-    pub fn enable_tasks(mut self) -> Self {
+    pub fn with_tasks(mut self) -> Self {
         self.capabilities.tasks = Some(crate::protocol::TasksCapability {
             list: Some(true),
             cancel: Some(true),
@@ -358,7 +358,7 @@ impl McpServer {
         self
     }
 
-    pub fn enable_elicitation(mut self) -> Self {
+    pub fn with_elicitation(mut self) -> Self {
         self.capabilities.elicitation = Some(crate::protocol::ElicitationCapability {
             form: Some(true),
             url: Some(true),
@@ -366,7 +366,7 @@ impl McpServer {
         self
     }
 
-    pub fn enable_resource_templates_dir(mut self, path: PathBuf) -> Self {
+    pub fn with_resource_templates_dir(mut self, path: PathBuf) -> Self {
         let mut new_state = (*self.state).clone();
         new_state.resource_templates_dir = Some(path);
         self.state = std::sync::Arc::new(new_state);
@@ -418,7 +418,7 @@ impl McpServer {
         Ok(handle)
     }
 
-    pub fn enable_prompts_dir(mut self, path: PathBuf) -> Self {
+    pub fn with_prompts_dir(mut self, path: PathBuf) -> Self {
         // Clone the content to get a mutable copy
         let mut new_state = (*self.state).clone();
         new_state.prompts_dir = Some(path);
@@ -854,15 +854,6 @@ impl McpServer {
     }
 }
 
-pub struct McpServerWithTools {
-    inner: McpServer,
-}
-impl McpServerWithTools {
-    pub fn run(self) -> McpServer {
-        self.inner
-    }
-}
-
 pub struct ServerBuilder {
     name: String,
     version: String,
@@ -960,43 +951,43 @@ impl ServerBuilder {
     pub fn build(self) -> McpServer {
         let mut server = McpServer::new(&self.name, &self.version);
         if self.enable_tools {
-            server = server.enable_tools();
+            server = server.with_tools();
         }
         if let Some(ref path) = self.tools_dir {
-            server = server.enable_tools_dir(path.clone());
+            server = server.with_tools_dir(path.clone());
         }
         if self.enable_resources {
-            server = server.enable_resources(self.resources_list_changed);
+            server = server.with_resources(self.resources_list_changed);
         }
         if let Some(ref path) = self.resources_dir {
-            server = server.enable_resources_dir(path.clone());
+            server = server.with_resources_dir(path.clone());
         }
         if self.enable_prompts {
-            server = server.enable_prompts();
+            server = server.with_prompts();
         }
         if let Some(ref path) = self.prompts_dir {
-            server = server.enable_prompts_dir(path.clone());
+            server = server.with_prompts_dir(path.clone());
         }
         if self.enable_logging {
-            server = server.enable_logging();
+            server = server.with_logging();
         }
         if self.enable_telemetry {
-            server = server.enable_telemetry();
+            server = server.with_telemetry();
         }
         if self.enable_sampling {
-            server = server.enable_sampling();
+            server = server.with_sampling();
         }
         if self.enable_resource_templates {
-            server = server.enable_resource_templates();
+            server = server.with_resource_templates();
         }
         if let Some(ref path) = self.resource_templates_dir {
-            server = server.enable_resource_templates_dir(path.clone());
+            server = server.with_resource_templates_dir(path.clone());
         }
         if self.enable_tasks {
-            server = server.enable_tasks();
+            server = server.with_tasks();
         }
         if self.enable_elicitation {
-            server = server.enable_elicitation();
+            server = server.with_elicitation();
         }
         server
     }
@@ -1023,7 +1014,7 @@ mod tests {
         )
         .unwrap();
         let server = McpServer::new("test-server", "1.0.0")
-            .enable_prompts_dir(temp_dir.path().to_path_buf())
+            .with_prompts_dir(temp_dir.path().to_path_buf())
             .with_prompt_cache_config(PromptCacheConfig {
                 ttl_secs: 1,
                 watch_for_changes: false,
@@ -1053,8 +1044,8 @@ mod tests {
             r#"{"name": "test", "description": "Test prompt", "messages": []}"#,
         )
         .unwrap();
-        let server = McpServer::new("test-server", "1.0.0")
-            .enable_prompts_dir(temp_dir.path().to_path_buf());
+        let server =
+            McpServer::new("test-server", "1.0.0").with_prompts_dir(temp_dir.path().to_path_buf());
         let _result: serde_json::Value =
             crate::handlers::handle_prompts_list(&server, &serde_json::json!({}))
                 .await

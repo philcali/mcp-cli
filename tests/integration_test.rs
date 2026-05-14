@@ -7,213 +7,10 @@ pub mod surface_areas;
 
 use std::fs;
 use std::io::{BufRead, Write};
-use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
 #[cfg(unix)]
 use libc::SIGTERM;
-
-/// Spawn the MCP server with optional resources and prompts directories.
-fn run_request_with_dirs(
-    method: &str,
-    params: Option<&serde_json::Value>,
-    id: i64,
-    resources_dir: Option<PathBuf>,
-    prompts_dir: Option<PathBuf>,
-) -> serde_json::Value {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_mcp-cli"));
-
-    if let Some(ref dir) = resources_dir {
-        cmd.arg("--resources-dir").arg(dir.to_str().unwrap());
-    }
-    if let Some(ref dir) = prompts_dir {
-        cmd.arg("--prompts-dir").arg(dir.to_str().unwrap());
-    }
-
-    let child = cmd
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .expect("Failed to spawn mcp-cli");
-
-    send_request_and_read_response(child, method, params, id)
-}
-
-/// Send a single request and read response.
-fn send_request_and_read_response(
-    mut child: std::process::Child,
-    method: &str,
-    params: Option<&serde_json::Value>,
-    id: i64,
-) -> serde_json::Value {
-    let req = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": id,
-        "method": method,
-    });
-
-    let request = if let Some(p) = params {
-        let mut r = req.as_object().unwrap().clone();
-        r.insert("params".to_string(), p.to_owned());
-        serde_json::Value::Object(r)
-    } else {
-        req
-    };
-
-    if let Some(mut stdin) = child.stdin.take() {
-        writeln!(stdin, "{}", request).unwrap();
-        drop(stdin);
-    }
-
-    let mut result = serde_json::Value::Null;
-    if let Some(stdout) = child.stdout.take() {
-        for line in std::io::BufReader::new(stdout)
-            .lines()
-            .map_while(|l| l.ok())
-        {
-            if line.trim_start().starts_with('{') {
-                result = serde_json::from_str(&line).expect("Failed to parse response");
-                break;
-            }
-        }
-    }
-
-    let _output = child.wait_with_output();
-    result
-}
-
-/// Spawn server and send multiple requests.
-fn run_request_sequence(
-    resources_dir: Option<PathBuf>,
-    prompts_dir: Option<PathBuf>,
-    requests: Vec<(&str, Option<&serde_json::Value>)>,
-) -> Vec<serde_json::Value> {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_mcp-cli"));
-
-    if let Some(ref dir) = resources_dir {
-        cmd.arg("--resources-dir").arg(dir.to_str().unwrap());
-    }
-    if let Some(ref dir) = prompts_dir {
-        cmd.arg("--prompts-dir").arg(dir.to_str().unwrap());
-    }
-
-    let mut child = cmd
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .expect("Failed to spawn mcp-cli");
-
-    let mut results: Vec<serde_json::Value> = Vec::new();
-
-    if let Some(mut stdin) = child.stdin.take() {
-        for (i, (method, params)) in requests.iter().enumerate() {
-            let id = i as i64 + 1;
-            let req = serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "method": method,
-            });
-
-            let request = if let Some(p) = params {
-                let mut r = req.as_object().unwrap().clone();
-                r.insert("params".to_string(), (*p).clone());
-                serde_json::Value::Object(r)
-            } else {
-                req
-            };
-
-            writeln!(stdin, "{}", request).unwrap();
-            stdin.flush().unwrap();
-
-            if let Some(ref mut stdout) = child.stdout {
-                let line = std::io::BufReader::new(stdout)
-                    .lines()
-                    .map_while(|l| l.ok())
-                    .find(|line| line.trim_start().starts_with('{'));
-
-                if let Some(line) = line {
-                    results.push(serde_json::from_str(&line).expect("Failed to parse response"));
-                }
-            }
-        }
-    }
-
-    if let Some(stdout) = child.stdout.take() {
-        for line in std::io::BufReader::new(stdout)
-            .lines()
-            .map_while(|l| l.ok())
-        {
-            if line.trim_start().starts_with('{') {
-                results.push(serde_json::from_str(&line).expect("Failed to parse response"));
-            }
-        }
-    }
-
-    let _output = child.wait_with_output();
-    results
-}
-
-/// Run requests in daemon mode.
-fn run_request_sequence_daemon(
-    requests: Vec<(&str, Option<&serde_json::Value>)>,
-) -> Vec<serde_json::Value> {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_mcp-cli"));
-    cmd.arg("--daemon");
-
-    let mut child = cmd
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .expect("Failed to spawn mcp-cli daemon");
-
-    let mut results: Vec<serde_json::Value> = Vec::new();
-
-    if let Some(mut stdin) = child.stdin.take() {
-        for (i, (method, params)) in requests.iter().enumerate() {
-            let id = i as i64 + 1;
-            let req = serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "method": method,
-            });
-
-            let request = if let Some(p) = params {
-                let mut r = req.as_object().unwrap().clone();
-                r.insert("params".to_string(), (*p).clone());
-                serde_json::Value::Object(r)
-            } else {
-                req
-            };
-
-            writeln!(stdin, "{}", request).unwrap();
-            stdin.flush().unwrap();
-
-            if let Some(ref mut stdout) = child.stdout {
-                let line = std::io::BufReader::new(stdout)
-                    .lines()
-                    .map_while(|l| l.ok())
-                    .find(|line| line.trim_start().starts_with('{'));
-
-                if let Some(line) = line {
-                    results.push(serde_json::from_str(&line).expect("Failed to parse response"));
-                }
-            }
-        }
-    }
-
-    #[cfg(unix)]
-    unsafe {
-        libc::kill(child.id() as i32, SIGTERM);
-    }
-
-    let output = child.wait_with_output().unwrap();
-    tracing::info!("Daemon process exited with status: {:?}", output.status);
-
-    results
-}
 
 // ===========================================================================
 // CORE FUNCTIONALITY TESTS
@@ -221,7 +18,7 @@ fn run_request_sequence_daemon(
 
 #[test]
 fn test_ping_before_initialize() {
-    let response = run_request_with_dirs("ping", None, 1, None, None);
+    let response = common::run_request_with_dirs("ping", None, 1, None, None);
 
     assert_eq!(response["jsonrpc"], "2.0");
     assert_eq!(response.get("error"), None);
@@ -233,7 +30,7 @@ fn test_ping_before_initialize() {
 
 #[test]
 fn test_ping_after_initialize() {
-    let results = run_request_sequence_daemon(vec![
+    let results = common::run_request_sequence_daemon(vec![
         (
             "initialize",
             Some(&serde_json::json!({
@@ -262,7 +59,7 @@ fn test_initialize() {
         }
     });
 
-    let response = run_request_with_dirs("initialize", Some(&params), 1, None, None);
+    let response = common::run_request_with_dirs("initialize", Some(&params), 1, None, None);
 
     assert_eq!(response["jsonrpc"], "2.0");
     assert_eq!(response["id"], serde_json::Value::Number(1.into()));
@@ -282,7 +79,7 @@ fn test_initialize() {
 
 #[test]
 fn test_tools_list_before_initialize() {
-    let response = run_request_with_dirs("tools/list", None, 2, None, None);
+    let response = common::run_request_with_dirs("tools/list", None, 2, None, None);
 
     assert!(
         response.get("error").is_some(),
@@ -293,7 +90,7 @@ fn test_tools_list_before_initialize() {
 
 #[test]
 fn test_unknown_method() {
-    let response = run_request_with_dirs("unknown/method", None, 3, None, None);
+    let response = common::run_request_with_dirs("unknown/method", None, 3, None, None);
 
     assert!(
         response.get("error").is_some(),
@@ -304,7 +101,7 @@ fn test_unknown_method() {
 
 #[test]
 fn test_resources_endpoints() {
-    let response = run_request_with_dirs("resources/list", None, 5, None, None);
+    let response = common::run_request_with_dirs("resources/list", None, 5, None, None);
 
     assert_eq!(response["jsonrpc"], "2.0");
     assert!(
@@ -315,7 +112,7 @@ fn test_resources_endpoints() {
 
 #[test]
 fn test_roots_list_before_initialize() {
-    let response = run_request_with_dirs("roots/list", None, 10, None, None);
+    let response = common::run_request_with_dirs("roots/list", None, 10, None, None);
 
     assert!(
         response.get("error").is_some(),
@@ -343,7 +140,7 @@ fn test_roots_list_with_client_roots() {
         ]
     });
 
-    let results = run_request_sequence(
+    let results = common::run_request_sequence(
         None,
         None,
         vec![("initialize", Some(&init_params)), ("roots/list", None)],
@@ -378,7 +175,7 @@ fn test_roots_list_without_client_roots_capability() {
         }
     });
 
-    let results = run_request_sequence(
+    let results = common::run_request_sequence(
         None,
         None,
         vec![("initialize", Some(&init_params)), ("roots/list", None)],
@@ -436,60 +233,21 @@ fn test_tools_call_with_directory() {
         "arguments": {"message": "Hello MCP"}
     });
 
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_mcp-cli"));
-    cmd.arg("--tools-dir")
-        .arg(temp_dir.path().to_str().unwrap());
+    let output = common::run_request_sequence_all(
+        Some(temp_dir.path().to_path_buf()),
+        None,
+        None,
+        None,
+        vec![],
+        vec![
+            ("initialize", Some(&init_params)),
+            ("tools/call", Some(&call_params)),
+        ],
+    );
 
-    let mut child = cmd
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .expect("Failed to spawn mcp-cli");
+    assert_eq!(output.results.len(), 2);
 
-    let requests = [
-        ("initialize", Some(&init_params)),
-        ("tools/call", Some(&call_params)),
-    ];
-
-    let mut results: Vec<serde_json::Value> = Vec::new();
-    if let Some(mut stdin) = child.stdin.take() {
-        for (i, (method, params)) in requests.iter().enumerate() {
-            let id = i as i64 + 1;
-            let req = serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "method": method,
-            });
-
-            let request = if let Some(p) = params {
-                let mut r = req.as_object().unwrap().clone();
-                r.insert("params".to_string(), (*p).clone());
-                serde_json::Value::Object(r)
-            } else {
-                req
-            };
-
-            writeln!(stdin, "{}", request).unwrap();
-        }
-    }
-
-    if let Some(stdout) = child.stdout.take() {
-        for line in std::io::BufReader::new(stdout)
-            .lines()
-            .map_while(|l| l.ok())
-        {
-            if line.trim_start().starts_with('{') {
-                results.push(serde_json::from_str(&line).expect("Failed to parse response"));
-            }
-        }
-    }
-
-    child.wait().unwrap();
-
-    assert_eq!(results.len(), 2);
-
-    let call_result = &results[1]["result"];
+    let call_result = &output.results[1]["result"];
     assert!(
         call_result.get("content").is_some(),
         "Should have content in result"
@@ -520,61 +278,22 @@ fn test_tools_call_not_found() {
         "arguments": {}
     });
 
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_mcp-cli"));
-    cmd.arg("--tools-dir")
-        .arg(temp_dir.path().to_str().unwrap());
+    let output = common::run_request_sequence_all(
+        Some(temp_dir.path().to_path_buf()),
+        None,
+        None,
+        None,
+        vec![],
+        vec![
+            ("initialize", Some(&init_params)),
+            ("tools/call", Some(&call_params)),
+        ],
+    );
 
-    let mut child = cmd
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .expect("Failed to spawn mcp-cli");
-
-    let requests = [
-        ("initialize", Some(&init_params)),
-        ("tools/call", Some(&call_params)),
-    ];
-
-    let mut results: Vec<serde_json::Value> = Vec::new();
-    if let Some(mut stdin) = child.stdin.take() {
-        for (i, (method, params)) in requests.iter().enumerate() {
-            let id = i as i64 + 1;
-            let req = serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "method": method,
-            });
-
-            let request = if let Some(p) = params {
-                let mut r = req.as_object().unwrap().clone();
-                r.insert("params".to_string(), (*p).clone());
-                serde_json::Value::Object(r)
-            } else {
-                req
-            };
-
-            writeln!(stdin, "{}", request).unwrap();
-        }
-    }
-
-    if let Some(stdout) = child.stdout.take() {
-        for line in std::io::BufReader::new(stdout)
-            .lines()
-            .map_while(|l| l.ok())
-        {
-            if line.trim_start().starts_with('{') {
-                results.push(serde_json::from_str(&line).expect("Failed to parse response"));
-            }
-        }
-    }
-
-    child.wait().unwrap();
-
-    assert_eq!(results.len(), 2);
+    assert_eq!(output.results.len(), 2);
 
     assert!(
-        results[1].get("error").is_some(),
+        output.results[1].get("error").is_some(),
         "Expected error for non-existent tool"
     );
 }
@@ -585,7 +304,7 @@ fn test_tools_call_not_found() {
 
 #[test]
 fn test_daemon_mode_initialize_and_list() {
-    let results = run_request_sequence_daemon(vec![
+    let results = common::run_request_sequence_daemon(vec![
         (
             "initialize",
             Some(&serde_json::json!({
@@ -617,7 +336,7 @@ fn test_daemon_mode_initialize_and_list() {
 
 #[test]
 fn test_daemon_mode_multiple_requests() {
-    let results = run_request_sequence_daemon(vec![
+    let results = common::run_request_sequence_daemon(vec![
         (
             "initialize",
             Some(&serde_json::json!({
@@ -999,57 +718,21 @@ fn test_resource_templates_list() {
         "clientInfo": { "name": "test-client", "version": "1.0" }
     });
 
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_mcp-cli"));
-    cmd.arg("--resource-templates-dir")
-        .arg(temp_dir.path().to_str().unwrap());
+    let output = common::run_request_sequence_all(
+        None,
+        None,
+        None,
+        Some(temp_dir.path().to_path_buf()),
+        vec![],
+        vec![
+            ("initialize", Some(&init_params)),
+            ("resources/templates/list", None),
+        ],
+    );
 
-    let mut child = cmd
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .expect("Failed to spawn mcp-cli");
+    assert_eq!(output.results.len(), 2);
 
-    let requests = [
-        ("initialize", Some(&init_params)),
-        ("resources/templates/list", None),
-    ];
-
-    let mut stdin = child.stdin.take().unwrap();
-    for (i, (method, params)) in requests.iter().enumerate() {
-        let id = i as i64 + 1;
-        let req = serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "method": method,
-        });
-
-        let request = if let Some(p) = params {
-            let mut r = req.as_object().unwrap().clone();
-            r.insert("params".to_string(), (*p).clone());
-            serde_json::Value::Object(r)
-        } else {
-            req
-        };
-
-        writeln!(stdin, "{}", request).unwrap();
-        stdin.flush().unwrap();
-    }
-    drop(stdin);
-
-    let output = child.wait_with_output().unwrap();
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-
-    let mut results: Vec<serde_json::Value> = Vec::new();
-    for line in stdout.lines() {
-        if line.trim_start().starts_with('{') {
-            results.push(serde_json::from_str(line).expect("Failed to parse response"));
-        }
-    }
-
-    assert_eq!(results.len(), 2);
-
-    let templates_result = &results[1]["result"];
+    let templates_result = &output.results[1]["result"];
     let templates_array = templates_result["templates"].as_array().unwrap();
     assert_eq!(templates_array.len(), 2);
 
@@ -1075,58 +758,19 @@ fn test_resource_templates_empty_dir() {
         "clientInfo": { "name": "test-client", "version": "1.0" }
     });
 
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_mcp-cli"));
-    cmd.arg("--resource-templates-dir")
-        .arg(temp_dir.path().to_str().unwrap());
+    let output = common::run_request_sequence_all(
+        None,
+        None,
+        None,
+        Some(temp_dir.path().to_path_buf()),
+        vec![],
+        vec![
+            ("initialize", Some(&init_params)),
+            ("resources/templates/list", None),
+        ],
+    );
 
-    let mut child = cmd
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .expect("Failed to spawn mcp-cli");
-
-    let requests = [
-        ("initialize", Some(&init_params)),
-        ("resources/templates/list", None),
-    ];
-
-    let mut results: Vec<serde_json::Value> = Vec::new();
-    if let Some(mut stdin) = child.stdin.take() {
-        for (i, (method, params)) in requests.iter().enumerate() {
-            let id = i as i64 + 1;
-            let req = serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "method": method,
-            });
-
-            let request = if let Some(p) = params {
-                let mut r = req.as_object().unwrap().clone();
-                r.insert("params".to_string(), (*p).clone());
-                serde_json::Value::Object(r)
-            } else {
-                req
-            };
-
-            writeln!(stdin, "{}", request).unwrap();
-        }
-    }
-
-    if let Some(stdout) = child.stdout.take() {
-        for line in std::io::BufReader::new(stdout)
-            .lines()
-            .map_while(|l| l.ok())
-        {
-            if line.trim_start().starts_with('{') {
-                results.push(serde_json::from_str(&line).expect("Failed to parse response"));
-            }
-        }
-    }
-
-    child.wait().unwrap();
-
-    let templates_array = &results[1]["result"]["templates"];
+    let templates_array = &output.results[1]["result"]["templates"];
     assert_eq!(templates_array.as_array().unwrap().len(), 0);
 }
 
@@ -1140,42 +784,16 @@ fn test_resource_templates_in_capabilities() {
         "clientInfo": { "name": "test-client", "version": "1.0" }
     });
 
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_mcp-cli"));
-    cmd.arg("--resource-templates-dir")
-        .arg(temp_dir.path().to_str().unwrap());
+    let output = common::run_request_sequence_all(
+        None,
+        None,
+        None,
+        Some(temp_dir.path().to_path_buf()),
+        vec![],
+        vec![("initialize", Some(&init_params))],
+    );
 
-    let mut child = cmd
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .expect("Failed to spawn mcp-cli");
-
-    let mut results: Vec<serde_json::Value> = Vec::new();
-    if let Some(mut stdin) = child.stdin.take() {
-        let req = serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": init_params,
-        });
-        writeln!(stdin, "{}", req).unwrap();
-    }
-
-    if let Some(stdout) = child.stdout.take() {
-        for line in std::io::BufReader::new(stdout)
-            .lines()
-            .map_while(|l| l.ok())
-        {
-            if line.trim_start().starts_with('{') {
-                results.push(serde_json::from_str(&line).expect("Failed to parse response"));
-            }
-        }
-    }
-
-    child.wait().unwrap();
-
-    let caps = &results[0]["result"]["capabilities"]["resources"];
+    let caps = &output.results[0]["result"]["capabilities"]["resources"];
     assert!(
         caps.get("templateListChanged").is_some(),
         "Expected templateListChanged in resources capability, got: {:?}",
